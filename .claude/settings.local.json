@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(New-Item -ItemType Directory -Force -Path \"C:\\\\Users\\\\peter\\\\Desktop\\\\LINE自動回復機器人\\\\prompts\")",
+      "Bash(Out-Null)",
+      "PowerShell(gh auth status 2>&1)"
+    ]
+  }
+}
