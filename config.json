@@ -2,5 +2,6 @@
   "text_model": "claude-haiku-4-5-20251001",
   "image_model": "claude-sonnet-4-5-20251001",
   "max_history_turns": 20,
-  "image_window_minutes": 30
+  "image_window_minutes": 30,
+  "strict_kb_mode": false
 }

@@ -9,51 +9,197 @@
   </div>
 </div>
 
-<div class="card p-4">
-  <p class="text-muted small mb-3">
-    <i class="bi bi-info-circle"></i>
-    這裡的內容會在<strong>圖片分析時</strong>自動注入給小凡，讓她更準確辨識農場植物和病蟲害。
-    加入越多農場特有資訊，準確度越高。
-  </p>
-  <form method="post">
-    <div class="mb-3">
-      <textarea name="content" class="form-control code-editor" rows="24">{{ content }}</textarea>
+{# ── Stats bar ── #}
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-3">
+    <div class="card p-3 text-center">
+      <div class="fs-2 fw-bold text-primary">{{ stats.document_count }}</div>
+      <div class="text-muted small">已上傳文件</div>
     </div>
-    <div class="d-flex gap-2">
-      <button type="submit" class="btn btn-primary">
-        <i class="bi bi-save"></i> 儲存並立即生效
-      </button>
-      <a href="{{ url_for('admin.dashboard') }}" class="btn btn-outline-secondary">取消</a>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card p-3 text-center">
+      <div class="fs-2 fw-bold text-success">{{ "{:,}".format(stats.estimated_tokens) }}</div>
+      <div class="text-muted small">約佔 tokens</div>
     </div>
-  </form>
-</div>
-
-<div class="card p-4 mt-3">
-  <h6 class="fw-bold"><i class="bi bi-lightbulb text-warning"></i> 建議加入的資訊</h6>
-  <div class="row g-2 small text-muted">
-    <div class="col-md-4">
-      <strong>🌱 植物清單</strong>
-      <ul class="mb-0 ps-3">
-        <li>農場目前種植的所有品種</li>
-        <li>特殊或稀有品種重點說明</li>
-      </ul>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card p-3 text-center">
+      <div class="fs-2 fw-bold text-warning">{{ "{:,}".format(stats.total_chars) }}</div>
+      <div class="text-muted small">總字元數</div>
     </div>
-    <div class="col-md-4">
-      <strong>🐛 病蟲害資料</strong>
-      <ul class="mb-0 ps-3">
-        <li>本地常見病蟲害種類</li>
-        <li>各季節好發問題</li>
-        <li>辨識特徵與防治方法</li>
-      </ul>
-    </div>
-    <div class="col-md-4">
-      <strong>📋 回答規範</strong>
-      <ul class="mb-0 ps-3">
-        <li>希望的回答格式</li>
-        <li>有機農法優先建議</li>
-        <li>何時建議聯繫農業輔導</li>
-      </ul>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card p-3 text-center {% if strict_mode %}bg-danger bg-opacity-10{% else %}bg-secondary bg-opacity-10{% endif %}">
+      <div class="fs-2 fw-bold {% if strict_mode %}text-danger{% else %}text-secondary{% endif %}">
+        {{ "🔒" if strict_mode else "🔓" }}
+      </div>
+      <div class="text-muted small">{{ "嚴格模式開啟" if strict_mode else "嚴格模式關閉" }}</div>
     </div>
   </div>
 </div>
+
+{% if strict_mode %}
+<div class="alert alert-danger d-flex gap-2 align-items-start mb-4">
+  <i class="bi bi-shield-fill-exclamation fs-5 flex-shrink-0"></i>
+  <div>
+    <strong>嚴格模式已啟用</strong>：小凡的回答必須完全來自上傳的知識庫，若找不到資料會明確告知使用者，不會自行推測。
+    <a href="{{ url_for('admin.settings') }}" class="ms-2">修改設定 →</a>
+  </div>
+</div>
+{% else %}
+<div class="alert alert-info d-flex gap-2 align-items-start mb-4">
+  <i class="bi bi-info-circle fs-5 flex-shrink-0"></i>
+  <div>
+    目前為一般模式，AI 會優先參考知識庫但也使用自身知識。
+    建議開啟<strong>嚴格模式</strong>以確保回答完全來自上傳資料。
+    <a href="{{ url_for('admin.settings') }}" class="ms-2">前往設定 →</a>
+  </div>
+</div>
+{% endif %}
+
+<div class="row g-4">
+  {# ── Upload ── #}
+  <div class="col-md-5">
+    <div class="card p-4 h-100">
+      <h6 class="fw-bold mb-3"><i class="bi bi-cloud-upload text-primary"></i> 上傳文件</h6>
+      <form method="post" action="{{ url_for('admin.knowledge_upload') }}" enctype="multipart/form-data" id="upload-form">
+        <div class="upload-zone border-2 border-dashed rounded-3 p-4 text-center mb-3"
+             id="drop-zone" style="border-color:#dee2e6;cursor:pointer;transition:.2s">
+          <i class="bi bi-file-earmark-arrow-up fs-1 text-muted d-block mb-2"></i>
+          <div class="fw-semibold mb-1">拖曳檔案到此處</div>
+          <div class="text-muted small mb-3">或點擊選擇檔案</div>
+          <input type="file" name="files" id="file-input" multiple
+                 accept=".pdf,.docx,.txt,.md,.csv" class="d-none">
+          <button type="button" class="btn btn-outline-primary btn-sm"
+                  onclick="document.getElementById('file-input').click()">
+            選擇檔案
+          </button>
+        </div>
+        <div id="file-list" class="mb-3 d-none">
+          <div class="fw-semibold small mb-1">已選擇：</div>
+          <ul id="file-names" class="list-unstyled small mb-0"></ul>
+        </div>
+        <div class="text-muted small mb-3">
+          支援格式：<code>PDF</code> <code>DOCX</code> <code>TXT</code> <code>MD</code> <code>CSV</code><br>
+          每檔最大 10 MB
+        </div>
+        <button type="submit" class="btn btn-primary w-100" id="upload-btn" disabled>
+          <i class="bi bi-upload"></i> 上傳並解析文字
+        </button>
+      </form>
+
+      <hr class="my-4">
+
+      <h6 class="fw-bold mb-2"><i class="bi bi-arrow-down-circle text-secondary"></i> 匯入備份</h6>
+      <form method="post" action="{{ url_for('admin.knowledge_import') }}" enctype="multipart/form-data">
+        <div class="input-group input-group-sm">
+          <input type="file" name="backup_file" class="form-control" accept=".json">
+          <button type="submit" class="btn btn-outline-secondary">匯入</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  {# ── Document list ── #}
+  <div class="col-md-7">
+    <div class="card p-4">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h6 class="fw-bold mb-0"><i class="bi bi-files text-success"></i> 知識庫文件（{{ stats.document_count }} 份）</h6>
+        <div class="d-flex gap-2">
+          {% if stats.document_count > 0 %}
+            <a href="{{ url_for('admin.knowledge_export') }}" class="btn btn-sm btn-outline-secondary">
+              <i class="bi bi-download"></i> 匯出備份
+            </a>
+            <form method="post" action="{{ url_for('admin.knowledge_clear') }}"
+                  onsubmit="return confirm('確定要清空所有知識庫文件嗎？')">
+              <button type="submit" class="btn btn-sm btn-outline-danger">
+                <i class="bi bi-trash"></i> 清空全部
+              </button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+
+      {% if stats.documents %}
+        <div style="max-height:520px;overflow-y:auto">
+          {% for doc in stats.documents %}
+            <div class="border rounded-3 mb-3 overflow-hidden">
+              <div class="d-flex justify-content-between align-items-center px-3 py-2 bg-light">
+                <div class="d-flex gap-2 align-items-center">
+                  {% set ext = doc.filename.rsplit('.', 1)[-1].lower() %}
+                  <span class="badge bg-{{ 'danger' if ext == 'pdf' else ('primary' if ext == 'docx' else 'secondary') }}">
+                    .{{ ext }}
+                  </span>
+                  <span class="fw-semibold small">{{ doc.filename }}</span>
+                </div>
+                <form method="post" action="{{ url_for('admin.knowledge_delete', doc_id=doc.id) }}"
+                      onsubmit="return confirm('刪除此文件？')">
+                  <button type="submit" class="btn btn-sm btn-link text-danger p-0">
+                    <i class="bi bi-x-lg"></i>
+                  </button>
+                </form>
+              </div>
+              <div class="px-3 py-2">
+                <div class="text-muted small mb-1">
+                  {{ "{:,}".format(doc.chars) }} 字元 ≈ {{ "{:,}".format(doc.chars // 4) }} tokens
+                  &nbsp;|&nbsp; {{ doc.uploaded_at }}
+                </div>
+                <div class="text-muted small font-monospace"
+                     style="white-space:pre-wrap;max-height:80px;overflow:hidden;mask-image:linear-gradient(to bottom,#000 60%,transparent)">{{ doc.preview }}</div>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="text-center text-muted py-5">
+          <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+          <div>尚未上傳任何文件</div>
+          <div class="small mt-1">上傳 PDF、DOCX 或 TXT 後，小凡就能依據這些資料回答問題</div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<script>
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+const fileList = document.getElementById('file-list');
+const fileNames = document.getElementById('file-names');
+const uploadBtn = document.getElementById('upload-btn');
+
+function updateFileList(files) {
+  if (!files.length) return;
+  fileList.classList.remove('d-none');
+  fileNames.innerHTML = '';
+  for (const f of files) {
+    const li = document.createElement('li');
+    li.innerHTML = `<i class="bi bi-file-earmark me-1"></i>${f.name} <span class="text-muted">(${(f.size/1024).toFixed(1)} KB)</span>`;
+    fileNames.appendChild(li);
+  }
+  uploadBtn.disabled = false;
+}
+
+fileInput.addEventListener('change', () => updateFileList(fileInput.files));
+
+dropZone.addEventListener('dragover', e => {
+  e.preventDefault();
+  dropZone.style.borderColor = '#0d6efd';
+  dropZone.style.background = '#f0f6ff';
+});
+dropZone.addEventListener('dragleave', () => {
+  dropZone.style.borderColor = '#dee2e6';
+  dropZone.style.background = '';
+});
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.style.borderColor = '#dee2e6';
+  dropZone.style.background = '';
+  const dt = new DataTransfer();
+  for (const f of e.dataTransfer.files) dt.items.add(f);
+  fileInput.files = dt.files;
+  updateFileList(fileInput.files);
+});
+</script>
 {% endblock %}

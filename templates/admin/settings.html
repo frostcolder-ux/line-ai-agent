@@ -7,8 +7,27 @@
   <h1>設定</h1>
 </div>
 
-<div class="card p-4">
-  <form method="post">
+<form method="post">
+  {# ── Strict KB mode ── #}
+  <div class="card p-4 mb-4">
+    <h6 class="fw-bold mb-3"><i class="bi bi-shield-lock text-danger"></i> 知識庫嚴格模式</h6>
+    <div class="form-check form-switch mb-2">
+      <input class="form-check-input" type="checkbox" role="switch"
+             name="strict_kb_mode" id="strict_kb_mode" style="width:3em;height:1.5em"
+             {% if cfg.strict_kb_mode %}checked{% endif %}>
+      <label class="form-check-label ms-2 fw-semibold" for="strict_kb_mode">
+        開啟嚴格模式（不允許幻覺）
+      </label>
+    </div>
+    <div class="bg-light rounded p-3 small text-muted mt-2">
+      <strong>🔒 開啟時：</strong>AI 只能使用上傳到知識庫的內容回答，找不到資料時會明確說「知識庫沒有相關資料」，不會自行推測。<br>
+      <strong>🔓 關閉時：</strong>AI 優先參考知識庫，但也可以使用自身一般知識補充。<br>
+      <span class="text-danger">建議：農業病蟲害診斷請開啟嚴格模式，避免 AI 提供錯誤農藥建議。</span>
+    </div>
+  </div>
+
+  {# ── Models ── #}
+  <div class="card p-4 mb-4">
     <h6 class="fw-bold mb-3"><i class="bi bi-cpu text-success"></i> Claude 模型設定</h6>
 
     <div class="mb-4">
@@ -21,55 +40,46 @@
           claude-sonnet-4-5 — 更聰明，費用較高
         </option>
       </select>
-      <div class="form-text">一般文字問答使用的 AI 模型</div>
     </div>
 
-    <div class="mb-4">
+    <div class="mb-2">
       <label class="form-label fw-semibold">🌿 圖片分析模型</label>
       <select name="image_model" class="form-select">
         <option value="claude-haiku-4-5-20251001" {% if cfg.image_model == 'claude-haiku-4-5-20251001' %}selected{% endif %}>
           claude-haiku-4-5 — 快速、省錢（準確度較低）
         </option>
         <option value="claude-sonnet-4-5-20251001" {% if cfg.image_model == 'claude-sonnet-4-5-20251001' %}selected{% endif %}>
-          claude-sonnet-4-5 — 植物辨識更準確（推薦）
+          claude-sonnet-4-5 — 植物辨識更準確（推薦）✓
         </option>
       </select>
-      <div class="form-text">圖片分析（病蟲害、植物辨識）使用的 AI 模型。Sonnet 準確度顯著較高。</div>
+      <div class="form-text">Sonnet 模型對植物辨識、病蟲害診斷準確度顯著較高</div>
     </div>
+  </div>
 
-    <hr>
+  {# ── Parameters ── #}
+  <div class="card p-4 mb-4">
     <h6 class="fw-bold mb-3"><i class="bi bi-sliders text-primary"></i> 行為參數</h6>
-
-    <div class="row g-3 mb-4">
+    <div class="row g-3">
       <div class="col-md-6">
         <label class="form-label fw-semibold">圖片等待視窗（分鐘）</label>
         <input type="number" name="image_window_minutes" class="form-control"
                value="{{ cfg.image_window_minutes }}" min="5" max="120">
-        <div class="form-text">傳照片後幾分鐘內叫小凡，她才會分析那張照片</div>
+        <div class="form-text">傳照片後幾分鐘內叫小凡，才會分析那張照片</div>
       </div>
       <div class="col-md-6">
         <label class="form-label fw-semibold">對話記憶回合數</label>
         <input type="number" name="max_history_turns" class="form-control"
                value="{{ cfg.max_history_turns }}" min="2" max="50">
-        <div class="form-text">小凡記住幾回合的對話（越多越耗費 token）</div>
+        <div class="form-text">小凡記住幾回合對話（越多越耗 token）</div>
       </div>
     </div>
-
-    <div class="d-flex gap-2">
-      <button type="submit" class="btn btn-success">
-        <i class="bi bi-save"></i> 儲存並立即生效
-      </button>
-      <a href="{{ url_for('admin.dashboard') }}" class="btn btn-outline-secondary">取消</a>
-    </div>
-  </form>
-</div>
-
-<div class="card p-4 mt-3">
-  <h6 class="fw-bold"><i class="bi bi-shield-lock text-danger"></i> 安全設定</h6>
-  <p class="text-muted small mb-2">管理員密碼請在 Render 環境變數設定（不在這裡管理）</p>
-  <div class="bg-light rounded p-3 font-monospace small">
-    環境變數名稱：<strong>ADMIN_PASSWORD</strong><br>
-    前往：Render Dashboard → line-ai-agent → Environment → 新增變數
   </div>
-</div>
+
+  <div class="d-flex gap-2">
+    <button type="submit" class="btn btn-success">
+      <i class="bi bi-save"></i> 儲存並立即生效
+    </button>
+    <a href="{{ url_for('admin.dashboard') }}" class="btn btn-outline-secondary">取消</a>
+  </div>
+</form>
 {% endblock %}

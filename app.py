@@ -67,13 +67,35 @@ def get_system_prompt() -> str:
         default="你是一位友善的 AI 助理，請用繁體中文回答問題。"
     )
 
-def get_image_system_prompt() -> str:
-    """System prompt for image analysis = base prompt + knowledge base."""
+def build_system_prompt() -> str:
+    """Build full system prompt with optional knowledge base injection."""
+    from knowledge_manager import get_all_content
     base = get_system_prompt()
-    kb = load_file(os.path.join(BASE_DIR, "prompts", "knowledge_base.txt"))
-    if kb.strip():
-        return base + "\n\n" + kb
-    return base
+    kb_content = get_all_content()
+
+    if not kb_content.strip():
+        return base
+
+    strict = APP_CONFIG.get("strict_kb_mode", False)
+    if strict:
+        return (
+            base
+            + "\n\n"
+            + "【嚴格知識庫模式】\n"
+            + "以下是你唯一可以使用的知識來源。回答問題時必須完全依據以下資料，"
+            + "不得使用任何知識庫以外的資訊或自行推測。\n"
+            + "若使用者的問題在以下資料中找不到答案，請明確告知：「知識庫中沒有這個問題的相關資料，"
+            + "建議您直接詢問農場工作人員。」\n\n"
+            + "## 知識庫內容\n\n"
+            + kb_content
+        )
+    else:
+        return (
+            base
+            + "\n\n"
+            + "## 農場知識庫（優先參考）\n\n"
+            + kb_content
+        )
 
 # Keep a hot-loaded reference updated by admin panel
 SYSTEM_PROMPT = get_system_prompt()
@@ -114,7 +136,7 @@ def get_ai_reply(user_id: str, user_message: str) -> str:
     response = claude.messages.create(
         model=APP_CONFIG.get("text_model", "claude-haiku-4-5-20251001"),
         max_tokens=1024,
-        system=get_system_prompt(),
+        system=build_system_prompt(),
         messages=history,
     )
     reply_text = response.content[0].text
@@ -135,7 +157,7 @@ def download_image(message_id: str) -> tuple[bytes, str]:
 
 def analyze_image(user_id: str, image_bytes: bytes, media_type: str, query: str) -> str:
     image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
-    image_system = get_image_system_prompt()
+    image_system = build_system_prompt()
 
     response = claude.messages.create(
         model=APP_CONFIG.get("image_model", "claude-sonnet-4-5-20251001"),
