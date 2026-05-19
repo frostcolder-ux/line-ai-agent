@@ -1,6 +1,5 @@
 import os
 import base64
-import time
 import requests
 import anthropic
 from flask import Flask, request, abort
@@ -25,15 +24,11 @@ handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
 # Anthropic client
 claude = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
-# Trigger keywords
+# Trigger keywords (only used to gate TEXT messages in groups)
 TRIGGER_KEYWORDS = [k.strip() for k in os.environ.get("TRIGGER_KEYWORDS", "小凡,思凡助理").split(",")]
 
 # Per-user conversation history (in-memory)
 conversation_history: dict[str, list] = {}
-
-# Track users who recently triggered the bot (for group image handling)
-triggered_users: dict[str, float] = {}
-TRIGGER_WINDOW_SECONDS = 600  # 10 minutes
 
 
 def load_system_prompt() -> str:
@@ -96,7 +91,6 @@ def analyze_image(user_id: str, image_bytes: bytes, media_type: str = "image/jpe
     """Send image to Claude Vision for plant disease/pest analysis."""
     image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
 
-    # Use a fresh message list for image analysis (don't pollute text history with base64)
     response = claude.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=1024,
@@ -115,7 +109,11 @@ def analyze_image(user_id: str, image_bytes: bytes, media_type: str = "image/jpe
                     },
                     {
                         "type": "text",
-                        "text": "請分析這張照片中植物的狀況，判斷是否有病蟲害、營養缺乏或其他問題，並提供具體的建議處理方式。如果照片不是植物，請描述你看到的內容並提供相關協助。",
+                        "text": (
+                            "請分析這張照片。"
+                            "如果是植物，請判斷是否有病蟲害、營養缺乏或其他問題，並給出具體建議。"
+                            "如果不是植物，請描述你看到的內容並友善回應。"
+                        ),
                     },
                 ],
             }
@@ -124,9 +122,9 @@ def analyze_image(user_id: str, image_bytes: bytes, media_type: str = "image/jpe
 
     reply_text = response.content[0].text
 
-    # Save a text summary to conversation history (avoid storing base64)
+    # Save a text summary to conversation history (avoid storing giant base64)
     history = conversation_history.setdefault(user_id, [])
-    history.append({"role": "user", "content": "[用戶傳送了一張植物照片請求病蟲害分析]"})
+    history.append({"role": "user", "content": "[用戶傳送了一張照片]"})
     history.append({"role": "assistant", "content": reply_text})
     if len(history) > 20:
         conversation_history[user_id] = history[-20:]
@@ -163,11 +161,10 @@ def handle_message(event: MessageEvent):
     user_text = event.message.text
     user_id = event.source.user_id
 
-    if not is_triggered(user_text):
+    # In groups: only respond to text if keyword is present
+    # In 1-on-1: always respond
+    if is_group_source(event) and not is_triggered(user_text):
         return
-
-    # Record trigger time for group image gating
-    triggered_users[user_id] = time.time()
 
     reply_text = get_ai_reply(user_id, user_text)
     send_reply(event.reply_token, reply_text)
@@ -175,13 +172,11 @@ def handle_message(event: MessageEvent):
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image(event: MessageEvent):
+    """
+    Images are ALWAYS analyzed regardless of source (group or 1:1).
+    No keyword gate needed — the user explicitly sent a photo.
+    """
     user_id = event.source.user_id
-
-    # In group/room: only respond if user triggered the bot recently
-    if is_group_source(event):
-        last_trigger = triggered_users.get(user_id, 0)
-        if time.time() - last_trigger > TRIGGER_WINDOW_SECONDS:
-            return
 
     try:
         image_bytes, media_type = download_image(event.message.id)
