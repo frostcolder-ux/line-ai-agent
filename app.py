@@ -1,11 +1,11 @@
 import os
+import sys
 import json
 import base64
 import time
-import logging
 import requests
 import anthropic
-from flask import Flask, request, abort
+from flask import Flask, request, abort, jsonify
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -16,9 +16,6 @@ from linebot.v3.messaging import (
     TextMessage,
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -31,14 +28,17 @@ claude = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 TRIGGER_KEYWORDS = [k.strip() for k in os.environ.get("TRIGGER_KEYWORDS", "小凡,思凡助理").split(",")]
 
 conversation_history: dict[str, list] = {}
-
-# Map: text_message_id → quoted_image_message_id  (from raw JSON pre-parse)
 quoted_image_map: dict[str, str] = {}
-
-# Map: group_id / user_id → (image_message_id, timestamp)  (most recent image seen)
 recent_images: dict[str, tuple[str, float]] = {}
 
-IMAGE_WINDOW = 300  # seconds — how long a recent image stays eligible
+IMAGE_WINDOW = 1800  # 30 minutes
+
+# Store last 10 raw webhook payloads for debugging
+debug_webhooks: list[dict] = []
+
+
+def log(msg: str):
+    print(f"[APP] {msg}", flush=True, file=sys.stderr)
 
 
 def load_system_prompt() -> str:
@@ -62,7 +62,6 @@ def is_group_source(event: MessageEvent) -> bool:
 
 
 def source_key(event: MessageEvent) -> str:
-    """Return a stable ID for the chat context (group, room, or 1:1)."""
     src = event.source
     return getattr(src, "group_id", None) or getattr(src, "room_id", None) or src.user_id
 
@@ -139,22 +138,25 @@ def callback():
     signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
 
-    # ── Pre-parse raw JSON — LOG everything so we can debug ──────────────────
+    # ── Store raw payload for debugging ──────────────────────────────────────
     try:
         payload = json.loads(body)
+        debug_webhooks.append(payload)
+        if len(debug_webhooks) > 10:
+            debug_webhooks.pop(0)
+
         for evt in payload.get("events", []):
             msg = evt.get("message", {})
-            log.info("WEBHOOK event type=%s msg_type=%s msg_id=%s quotedMessageId=%s",
-                     evt.get("type"), msg.get("type"), msg.get("id"),
-                     msg.get("quotedMessageId", "NONE"))
+            quoted_id = msg.get("quotedMessageId")
+            log(f"EVENT type={evt.get('type')} msg_type={msg.get('type')} "
+                f"msg_id={msg.get('id')} quotedMessageId={quoted_id}")
 
-            if msg.get("type") == "text":
-                quoted_id = msg.get("quotedMessageId")
-                if quoted_id:
-                    log.info("QUOTED IMAGE detected: text_msg=%s → quoted=%s", msg["id"], quoted_id)
-                    quoted_image_map[msg["id"]] = quoted_id
+            if msg.get("type") == "text" and quoted_id:
+                log(f"QUOTE-REPLY: text_msg={msg['id']} quotes image={quoted_id}")
+                quoted_image_map[msg["id"]] = quoted_id
+
     except Exception as e:
-        log.warning("Pre-parse error: %s", e)
+        log(f"Pre-parse error: {e}")
 
     try:
         handler.handle(body, signature)
@@ -175,34 +177,42 @@ def handle_message(event: MessageEvent):
 
     query = strip_keywords(user_text) or "請分析這張照片中植物的病蟲害狀況。"
 
-    # Priority 1: user replied (quoted) to a specific image
+    # Priority 1: user quoted an image
     quoted_id = quoted_image_map.pop(event.message.id, None)
+    log(f"TEXT trigger: query={query!r} quoted_id={quoted_id} ctx={ctx_key}")
+
     if quoted_id:
-        log.info("Using quotedMessageId=%s for analysis", quoted_id)
+        log(f"Downloading quoted image {quoted_id}")
         try:
             image_bytes, media_type = download_image(quoted_id)
+            log(f"Downloaded {len(image_bytes)} bytes media_type={media_type}")
             reply_text = analyze_image(user_id, image_bytes, media_type, query)
             send_reply(event.reply_token, reply_text)
             return
         except Exception as e:
-            log.error("Failed to download quoted image %s: %s", quoted_id, e)
+            log(f"Quoted image download failed: {e}")
+            send_reply(event.reply_token, f"抱歉，無法讀取引用的照片（{type(e).__name__}）。請直接傳照片給我！")
+            return
 
-    # Priority 2: fall back to the most recent image seen in this chat
+    # Priority 2: most recent image in this chat (within 30 min)
     recent = recent_images.get(ctx_key)
     if recent:
         img_id, img_ts = recent
         age = time.time() - img_ts
-        log.info("Recent image fallback: id=%s age=%.0fs", img_id, age)
+        log(f"Recent image: id={img_id} age={age:.0f}s (window={IMAGE_WINDOW}s)")
         if age <= IMAGE_WINDOW:
             try:
                 image_bytes, media_type = download_image(img_id)
+                log(f"Downloaded recent image {len(image_bytes)} bytes")
                 reply_text = analyze_image(user_id, image_bytes, media_type, query)
                 send_reply(event.reply_token, reply_text)
                 return
             except Exception as e:
-                log.error("Failed to download recent image %s: %s", img_id, e)
+                log(f"Recent image download failed: {e}")
+        else:
+            log(f"Recent image expired (age={age:.0f}s)")
 
-    # Priority 3: plain text reply
+    log("No image found — falling back to text reply")
     reply_text = get_ai_reply(user_id, user_text)
     send_reply(event.reply_token, reply_text)
 
@@ -212,17 +222,16 @@ def handle_image(event: MessageEvent):
     user_id = event.source.user_id
     ctx_key = source_key(event)
 
-    # Remember this image for the next keyword trigger in this chat
     recent_images[ctx_key] = (event.message.id, time.time())
-    log.info("Image received: id=%s ctx=%s", event.message.id, ctx_key)
+    log(f"Image stored: id={event.message.id} ctx={ctx_key}")
 
-    # Also analyze it immediately (direct photo send = always respond)
     try:
         image_bytes, media_type = download_image(event.message.id)
+        log(f"Analyzing image {event.message.id}: {len(image_bytes)} bytes {media_type}")
         query = "請分析這張照片中植物的狀況，判斷是否有病蟲害、營養缺乏或其他問題，並給出具體建議。如果不是植物，請描述你看到的內容並友善回應。"
         reply_text = analyze_image(user_id, image_bytes, media_type, query)
     except Exception as e:
-        log.error("Image analysis failed: %s", e)
+        log(f"Image analysis error: {e}")
         reply_text = f"抱歉，照片讀取失敗，請再試一次。（{type(e).__name__}）"
 
     send_reply(event.reply_token, reply_text)
@@ -231,6 +240,22 @@ def handle_image(event: MessageEvent):
 @app.route("/health", methods=["GET"])
 def health():
     return {"status": "ok"}, 200
+
+
+@app.route("/debug/webhook", methods=["GET"])
+def debug_webhook():
+    """Show last 10 received webhook payloads — for debugging only."""
+    return jsonify({"count": len(debug_webhooks), "webhooks": debug_webhooks})
+
+
+@app.route("/debug/state", methods=["GET"])
+def debug_state():
+    """Show current in-memory state."""
+    return jsonify({
+        "recent_images": {k: {"id": v[0], "age_seconds": round(time.time() - v[1])} for k, v in recent_images.items()},
+        "quoted_image_map": quoted_image_map,
+        "conversation_users": list(conversation_history.keys()),
+    })
 
 
 if __name__ == "__main__":
