@@ -248,8 +248,8 @@ def handle_message(event: MessageEvent):
                 send_reply(event.reply_token, reply_text)
                 return
             except Exception as e:
-                log(f"Quoted image failed: {e}")
-                send_reply(event.reply_token, f"抱歉，無法讀取那張照片（{type(e).__name__}）。請直接傳照片給我！")
+                log(f"Quoted image failed: {type(e).__name__}: {e}")
+                send_reply(event.reply_token, f"[DEBUG] 錯誤：{type(e).__name__}: {str(e)[:100]}")
                 return
 
         # Priority 2: recent image in this chat (within window)
@@ -276,7 +276,7 @@ def handle_message(event: MessageEvent):
     except Exception as e:
         log(f"handle_message ERROR: {type(e).__name__}: {e}")
         try:
-            send_reply(event.reply_token, "抱歉，我現在遇到一點問題，請稍後再試。")
+            send_reply(event.reply_token, f"[DEBUG] 錯誤：{type(e).__name__}: {str(e)[:100]}")
         except Exception:
             pass
 
