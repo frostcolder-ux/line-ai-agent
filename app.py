@@ -234,43 +234,51 @@ def handle_message(event: MessageEvent):
 
     query = strip_keywords(user_text) or "請分析這張照片中植物的病蟲害狀況。"
 
-    # Priority 1: user quote-replied to an image
-    quoted_id = quoted_image_map.pop(event.message.id, None)
-    log(f"TEXT trigger: quoted_id={quoted_id} ctx={ctx_key}")
+    try:
+        # Priority 1: user quote-replied to an image
+        quoted_id = quoted_image_map.pop(event.message.id, None)
+        log(f"TEXT trigger: quoted_id={quoted_id} ctx={ctx_key}")
 
-    if quoted_id:
-        log(f"Downloading quoted image {quoted_id}")
-        try:
-            image_bytes, media_type = download_image(quoted_id)
-            log(f"Downloaded {len(image_bytes)} bytes {media_type}")
-            reply_text = analyze_image(user_id, image_bytes, media_type, query)
-            send_reply(event.reply_token, reply_text)
-            return
-        except Exception as e:
-            log(f"Quoted image failed: {e}")
-            send_reply(event.reply_token, f"抱歉，無法讀取那張照片（{type(e).__name__}）。請直接傳照片給我！")
-            return
-
-    # Priority 2: recent image in this chat (within window)
-    window_secs = APP_CONFIG.get("image_window_minutes", 30) * 60
-    recent = recent_images.get(ctx_key)
-    if recent:
-        img_id, img_ts = recent
-        age = time.time() - img_ts
-        log(f"Recent image: id={img_id} age={age:.0f}s window={window_secs}s")
-        if age <= window_secs:
+        if quoted_id:
+            log(f"Downloading quoted image {quoted_id}")
             try:
-                image_bytes, media_type = download_image(img_id)
+                image_bytes, media_type = download_image(quoted_id)
+                log(f"Downloaded {len(image_bytes)} bytes {media_type}")
                 reply_text = analyze_image(user_id, image_bytes, media_type, query)
                 send_reply(event.reply_token, reply_text)
                 return
             except Exception as e:
-                log(f"Recent image failed: {e}")
+                log(f"Quoted image failed: {e}")
+                send_reply(event.reply_token, f"抱歉，無法讀取那張照片（{type(e).__name__}）。請直接傳照片給我！")
+                return
 
-    # Priority 3: plain text reply
-    log("No image found, text reply")
-    reply_text = get_ai_reply(user_id, user_text)
-    send_reply(event.reply_token, reply_text)
+        # Priority 2: recent image in this chat (within window)
+        window_secs = APP_CONFIG.get("image_window_minutes", 30) * 60
+        recent = recent_images.get(ctx_key)
+        if recent:
+            img_id, img_ts = recent
+            age = time.time() - img_ts
+            log(f"Recent image: id={img_id} age={age:.0f}s window={window_secs}s")
+            if age <= window_secs:
+                try:
+                    image_bytes, media_type = download_image(img_id)
+                    reply_text = analyze_image(user_id, image_bytes, media_type, query)
+                    send_reply(event.reply_token, reply_text)
+                    return
+                except Exception as e:
+                    log(f"Recent image failed: {e}")
+
+        # Priority 3: plain text reply
+        log("No image found, text reply")
+        reply_text = get_ai_reply(user_id, user_text)
+        send_reply(event.reply_token, reply_text)
+
+    except Exception as e:
+        log(f"handle_message ERROR: {type(e).__name__}: {e}")
+        try:
+            send_reply(event.reply_token, "抱歉，我現在遇到一點問題，請稍後再試。")
+        except Exception:
+            pass
 
 
 @handler.add(MessageEvent, message=ImageMessageContent)
