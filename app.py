@@ -18,42 +18,70 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "selvans-secret-2024-change-me")
 
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
 claude = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
+BASE_DIR = os.path.dirname(__file__)
+
+# ── Config ───────────────────────────────────────────────────────────────────
+
+def load_config() -> dict:
+    try:
+        with open(os.path.join(BASE_DIR, "config.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {
+            "text_model": "claude-haiku-4-5-20251001",
+            "image_model": "claude-sonnet-4-5-20251001",
+            "max_history_turns": 20,
+            "image_window_minutes": 30,
+        }
+
+APP_CONFIG = load_config()
+
 TRIGGER_KEYWORDS = [k.strip() for k in os.environ.get("TRIGGER_KEYWORDS", "小凡,思凡助理").split(",")]
 
+# ── State ────────────────────────────────────────────────────────────────────
+
 conversation_history: dict[str, list] = {}
-
-# text_message_id → quoted_image_message_id  (extracted from raw JSON)
 quoted_image_map: dict[str, str] = {}
-
-# group/room/user key → (image_message_id, timestamp)
 recent_images: dict[str, tuple[str, float]] = {}
-
-IMAGE_WINDOW = 1800  # 30 minutes
-
-# Last 10 raw webhook payloads for debugging
 debug_webhooks: list[dict] = []
 
+# ── Prompts ──────────────────────────────────────────────────────────────────
+
+def load_file(path: str, default: str = "") -> str:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return default
+
+def get_system_prompt() -> str:
+    return load_file(
+        os.path.join(BASE_DIR, "prompts", "selvans.txt"),
+        default="你是一位友善的 AI 助理，請用繁體中文回答問題。"
+    )
+
+def get_image_system_prompt() -> str:
+    """System prompt for image analysis = base prompt + knowledge base."""
+    base = get_system_prompt()
+    kb = load_file(os.path.join(BASE_DIR, "prompts", "knowledge_base.txt"))
+    if kb.strip():
+        return base + "\n\n" + kb
+    return base
+
+# Keep a hot-loaded reference updated by admin panel
+SYSTEM_PROMPT = get_system_prompt()
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def log(msg: str):
     print(f"[APP] {msg}", flush=True, file=sys.stderr)
-
-
-def load_system_prompt() -> str:
-    prompt_path = os.path.join(os.path.dirname(__file__), "prompts", "selvans.txt")
-    try:
-        with open(prompt_path, encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        return "你是一位友善的 AI 助理，請用繁體中文回答問題。"
-
-
-SYSTEM_PROMPT = load_system_prompt()
 
 
 def is_triggered(text: str) -> bool:
@@ -77,13 +105,16 @@ def get_ai_reply(user_id: str, user_message: str) -> str:
     history = conversation_history.setdefault(user_id, [])
     query = strip_keywords(user_message) or "你好"
     history.append({"role": "user", "content": query})
-    if len(history) > 20:
-        history = history[-20:]
+
+    max_turns = APP_CONFIG.get("max_history_turns", 20)
+    if len(history) > max_turns:
+        history = history[-max_turns:]
         conversation_history[user_id] = history
+
     response = claude.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=APP_CONFIG.get("text_model", "claude-haiku-4-5-20251001"),
         max_tokens=1024,
-        system=SYSTEM_PROMPT,
+        system=get_system_prompt(),
         messages=history,
     )
     reply_text = response.content[0].text
@@ -104,10 +135,12 @@ def download_image(message_id: str) -> tuple[bytes, str]:
 
 def analyze_image(user_id: str, image_bytes: bytes, media_type: str, query: str) -> str:
     image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+    image_system = get_image_system_prompt()
+
     response = claude.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=APP_CONFIG.get("image_model", "claude-sonnet-4-5-20251001"),
         max_tokens=1024,
-        system=SYSTEM_PROMPT,
+        system=image_system,
         messages=[{
             "role": "user",
             "content": [
@@ -120,8 +153,8 @@ def analyze_image(user_id: str, image_bytes: bytes, media_type: str, query: str)
     history = conversation_history.setdefault(user_id, [])
     history.append({"role": "user", "content": f"[照片] {query}"})
     history.append({"role": "assistant", "content": reply_text})
-    if len(history) > 20:
-        conversation_history[user_id] = history[-20:]
+    if len(history) > APP_CONFIG.get("max_history_turns", 20):
+        conversation_history[user_id] = history[-APP_CONFIG.get("max_history_turns", 20):]
     return reply_text
 
 
@@ -131,6 +164,12 @@ def send_reply(reply_token: str, text: str):
             ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=text)])
         )
 
+# ── Register admin blueprint ─────────────────────────────────────────────────
+
+from admin_routes import admin_bp
+app.register_blueprint(admin_bp)
+
+# ── LINE Webhook ─────────────────────────────────────────────────────────────
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -168,7 +207,6 @@ def handle_message(event: MessageEvent):
     user_id = event.source.user_id
     ctx_key = source_key(event)
 
-    # Require trigger keyword in all chats (group & 1:1)
     if not is_triggered(user_text):
         return
 
@@ -191,13 +229,14 @@ def handle_message(event: MessageEvent):
             send_reply(event.reply_token, f"抱歉，無法讀取那張照片（{type(e).__name__}）。請直接傳照片給我！")
             return
 
-    # Priority 2: recent image in this chat (within 30 min)
+    # Priority 2: recent image in this chat (within window)
+    window_secs = APP_CONFIG.get("image_window_minutes", 30) * 60
     recent = recent_images.get(ctx_key)
     if recent:
         img_id, img_ts = recent
         age = time.time() - img_ts
-        log(f"Recent image: id={img_id} age={age:.0f}s")
-        if age <= IMAGE_WINDOW:
+        log(f"Recent image: id={img_id} age={age:.0f}s window={window_secs}s")
+        if age <= window_secs:
             try:
                 image_bytes, media_type = download_image(img_id)
                 reply_text = analyze_image(user_id, image_bytes, media_type, query)
@@ -214,18 +253,17 @@ def handle_message(event: MessageEvent):
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image(event: MessageEvent):
-    """
-    Store image ID for 30 min so a subsequent text trigger can use it.
-    Do NOT auto-reply — only respond when explicitly triggered via text.
-    """
+    """Store image for later triggered analysis. No auto-reply."""
     ctx_key = source_key(event)
     recent_images[ctx_key] = (event.message.id, time.time())
     log(f"Image stored (no auto-reply): id={event.message.id} ctx={ctx_key}")
 
 
+# ── Utility routes ───────────────────────────────────────────────────────────
+
 @app.route("/health", methods=["GET"])
 def health():
-    return {"status": "ok"}, 200
+    return {"status": "ok", "image_model": APP_CONFIG.get("image_model")}, 200
 
 
 @app.route("/debug/webhook", methods=["GET"])
@@ -236,6 +274,7 @@ def debug_webhook():
 @app.route("/debug/state", methods=["GET"])
 def debug_state():
     return jsonify({
+        "config": APP_CONFIG,
         "recent_images": {k: {"id": v[0], "age_seconds": round(time.time() - v[1])} for k, v in recent_images.items()},
         "quoted_image_map": quoted_image_map,
     })

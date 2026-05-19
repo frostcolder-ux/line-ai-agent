@@ -1,0 +1,75 @@
+{% extends "admin/base.html" %}
+{% block title %}設定{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <i class="bi bi-gear fs-4 text-secondary"></i>
+  <h1>設定</h1>
+</div>
+
+<div class="card p-4">
+  <form method="post">
+    <h6 class="fw-bold mb-3"><i class="bi bi-cpu text-success"></i> Claude 模型設定</h6>
+
+    <div class="mb-4">
+      <label class="form-label fw-semibold">📝 文字對話模型</label>
+      <select name="text_model" class="form-select">
+        <option value="claude-haiku-4-5-20251001" {% if cfg.text_model == 'claude-haiku-4-5-20251001' %}selected{% endif %}>
+          claude-haiku-4-5 — 快速、省錢（推薦用於文字）
+        </option>
+        <option value="claude-sonnet-4-5-20251001" {% if cfg.text_model == 'claude-sonnet-4-5-20251001' %}selected{% endif %}>
+          claude-sonnet-4-5 — 更聰明，費用較高
+        </option>
+      </select>
+      <div class="form-text">一般文字問答使用的 AI 模型</div>
+    </div>
+
+    <div class="mb-4">
+      <label class="form-label fw-semibold">🌿 圖片分析模型</label>
+      <select name="image_model" class="form-select">
+        <option value="claude-haiku-4-5-20251001" {% if cfg.image_model == 'claude-haiku-4-5-20251001' %}selected{% endif %}>
+          claude-haiku-4-5 — 快速、省錢（準確度較低）
+        </option>
+        <option value="claude-sonnet-4-5-20251001" {% if cfg.image_model == 'claude-sonnet-4-5-20251001' %}selected{% endif %}>
+          claude-sonnet-4-5 — 植物辨識更準確（推薦）
+        </option>
+      </select>
+      <div class="form-text">圖片分析（病蟲害、植物辨識）使用的 AI 模型。Sonnet 準確度顯著較高。</div>
+    </div>
+
+    <hr>
+    <h6 class="fw-bold mb-3"><i class="bi bi-sliders text-primary"></i> 行為參數</h6>
+
+    <div class="row g-3 mb-4">
+      <div class="col-md-6">
+        <label class="form-label fw-semibold">圖片等待視窗（分鐘）</label>
+        <input type="number" name="image_window_minutes" class="form-control"
+               value="{{ cfg.image_window_minutes }}" min="5" max="120">
+        <div class="form-text">傳照片後幾分鐘內叫小凡，她才會分析那張照片</div>
+      </div>
+      <div class="col-md-6">
+        <label class="form-label fw-semibold">對話記憶回合數</label>
+        <input type="number" name="max_history_turns" class="form-control"
+               value="{{ cfg.max_history_turns }}" min="2" max="50">
+        <div class="form-text">小凡記住幾回合的對話（越多越耗費 token）</div>
+      </div>
+    </div>
+
+    <div class="d-flex gap-2">
+      <button type="submit" class="btn btn-success">
+        <i class="bi bi-save"></i> 儲存並立即生效
+      </button>
+      <a href="{{ url_for('admin.dashboard') }}" class="btn btn-outline-secondary">取消</a>
+    </div>
+  </form>
+</div>
+
+<div class="card p-4 mt-3">
+  <h6 class="fw-bold"><i class="bi bi-shield-lock text-danger"></i> 安全設定</h6>
+  <p class="text-muted small mb-2">管理員密碼請在 Render 環境變數設定（不在這裡管理）</p>
+  <div class="bg-light rounded p-3 font-monospace small">
+    環境變數名稱：<strong>ADMIN_PASSWORD</strong><br>
+    前往：Render Dashboard → line-ai-agent → Environment → 新增變數
+  </div>
+</div>
+{% endblock %}

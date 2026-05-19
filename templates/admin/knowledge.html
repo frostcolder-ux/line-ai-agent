@@ -1,0 +1,59 @@
+{% extends "admin/base.html" %}
+{% block title %}農業知識庫{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <i class="bi bi-book fs-4 text-primary"></i>
+  <div>
+    <h1>農業知識庫</h1>
+  </div>
+</div>
+
+<div class="card p-4">
+  <p class="text-muted small mb-3">
+    <i class="bi bi-info-circle"></i>
+    這裡的內容會在<strong>圖片分析時</strong>自動注入給小凡，讓她更準確辨識農場植物和病蟲害。
+    加入越多農場特有資訊，準確度越高。
+  </p>
+  <form method="post">
+    <div class="mb-3">
+      <textarea name="content" class="form-control code-editor" rows="24">{{ content }}</textarea>
+    </div>
+    <div class="d-flex gap-2">
+      <button type="submit" class="btn btn-primary">
+        <i class="bi bi-save"></i> 儲存並立即生效
+      </button>
+      <a href="{{ url_for('admin.dashboard') }}" class="btn btn-outline-secondary">取消</a>
+    </div>
+  </form>
+</div>
+
+<div class="card p-4 mt-3">
+  <h6 class="fw-bold"><i class="bi bi-lightbulb text-warning"></i> 建議加入的資訊</h6>
+  <div class="row g-2 small text-muted">
+    <div class="col-md-4">
+      <strong>🌱 植物清單</strong>
+      <ul class="mb-0 ps-3">
+        <li>農場目前種植的所有品種</li>
+        <li>特殊或稀有品種重點說明</li>
+      </ul>
+    </div>
+    <div class="col-md-4">
+      <strong>🐛 病蟲害資料</strong>
+      <ul class="mb-0 ps-3">
+        <li>本地常見病蟲害種類</li>
+        <li>各季節好發問題</li>
+        <li>辨識特徵與防治方法</li>
+      </ul>
+    </div>
+    <div class="col-md-4">
+      <strong>📋 回答規範</strong>
+      <ul class="mb-0 ps-3">
+        <li>希望的回答格式</li>
+        <li>有機農法優先建議</li>
+        <li>何時建議聯繫農業輔導</li>
+      </ul>
+    </div>
+  </div>
+</div>
+{% endblock %}

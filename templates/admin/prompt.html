@@ -1,0 +1,40 @@
+{% extends "admin/base.html" %}
+{% block title %}系統 Prompt{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <i class="bi bi-chat-square-text fs-4 text-success"></i>
+  <div>
+    <h1>系統 Prompt</h1>
+  </div>
+</div>
+
+<div class="card p-4">
+  <p class="text-muted small mb-3">
+    <i class="bi bi-info-circle"></i>
+    這是小凡的「個性設定」，決定她的角色、溝通風格、和能力邊界。修改後立即生效，但重新部署後若未提交到 GitHub 則會還原。
+  </p>
+  <form method="post">
+    <div class="mb-3">
+      <textarea name="content" class="form-control code-editor" rows="20">{{ content }}</textarea>
+    </div>
+    <div class="d-flex gap-2">
+      <button type="submit" class="btn btn-success">
+        <i class="bi bi-save"></i> 儲存並立即生效
+      </button>
+      <a href="{{ url_for('admin.dashboard') }}" class="btn btn-outline-secondary">取消</a>
+    </div>
+  </form>
+</div>
+
+<div class="card p-4 mt-3">
+  <h6 class="fw-bold"><i class="bi bi-lightbulb text-warning"></i> 撰寫提示</h6>
+  <ul class="small text-muted mb-0">
+    <li>說明小凡的角色身份（思凡社會農場 AI 助理）</li>
+    <li>設定語氣風格（親切、專業、繁體中文）</li>
+    <li>列出她能處理的問題類型</li>
+    <li>設定回答字數限制（建議 200 字以內）</li>
+    <li>農業知識請放在「農業知識庫」頁面，不要全部塞在這裡</li>
+  </ul>
+</div>
+{% endblock %}

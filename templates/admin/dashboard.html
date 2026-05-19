@@ -1,0 +1,97 @@
+{% extends "admin/base.html" %}
+{% block title %}總覽{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <i class="bi bi-speedometer2 fs-4 text-success"></i>
+  <h1>總覽</h1>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-3">
+    <div class="card p-3 text-center">
+      <div class="fs-1 fw-bold text-success">{{ stats.active_users }}</div>
+      <div class="text-muted small">活躍用戶</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card p-3 text-center">
+      <div class="fs-1 fw-bold text-primary">{{ stats.tracked_images }}</div>
+      <div class="text-muted small">暫存圖片</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card p-3 text-center">
+      <div class="fs-1 fw-bold text-warning">{{ stats.recent_webhooks }}</div>
+      <div class="text-muted small">近期 Webhook</div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3">
+    <div class="card p-3 text-center">
+      <div class="fs-1 fw-bold text-info">{{ stats.last_events | length }}</div>
+      <div class="text-muted small">最近事件</div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <div class="col-md-6">
+    <div class="card p-4">
+      <h6 class="fw-bold mb-3"><i class="bi bi-cpu text-success"></i> 目前使用模型</h6>
+      <table class="table table-sm mb-0">
+        <tr>
+          <td class="text-muted">文字對話</td>
+          <td><code>{{ cfg.text_model }}</code></td>
+        </tr>
+        <tr>
+          <td class="text-muted">圖片分析</td>
+          <td><code>{{ cfg.image_model }}</code></td>
+        </tr>
+        <tr>
+          <td class="text-muted">圖片等待視窗</td>
+          <td>{{ cfg.image_window_minutes }} 分鐘</td>
+        </tr>
+      </table>
+      <a href="{{ url_for('admin.settings') }}" class="btn btn-sm btn-outline-secondary mt-3">修改設定</a>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card p-4">
+      <h6 class="fw-bold mb-3"><i class="bi bi-activity text-primary"></i> 最近事件</h6>
+      {% if stats.last_events %}
+        {% for evt in stats.last_events %}
+          <div class="d-flex gap-2 mb-1">
+            <span class="badge bg-{{ 'success' if evt.type == 'image' else 'secondary' }}">{{ evt.type }}</span>
+            <span class="text-muted small">來自 {{ evt.source }}</span>
+          </div>
+        {% endfor %}
+      {% else %}
+        <p class="text-muted small mb-0">尚無事件紀錄（傳訊息後會出現）</p>
+      {% endif %}
+      <a href="{{ url_for('admin.logs') }}" class="btn btn-sm btn-outline-secondary mt-3">查看完整紀錄</a>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mt-1">
+  <div class="col-12">
+    <div class="card p-4">
+      <h6 class="fw-bold mb-3"><i class="bi bi-lightning text-warning"></i> 快速操作</h6>
+      <div class="d-flex flex-wrap gap-2">
+        <a href="{{ url_for('admin.prompt') }}" class="btn btn-outline-success">
+          <i class="bi bi-chat-square-text"></i> 編輯系統 Prompt
+        </a>
+        <a href="{{ url_for('admin.knowledge') }}" class="btn btn-outline-primary">
+          <i class="bi bi-book"></i> 編輯農業知識庫
+        </a>
+        <a href="{{ url_for('admin.settings') }}" class="btn btn-outline-secondary">
+          <i class="bi bi-gear"></i> 模型與參數設定
+        </a>
+        <a href="{{ url_for('admin.logs') }}" class="btn btn-outline-dark">
+          <i class="bi bi-list-ul"></i> 查看 Webhook 紀錄
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,60 @@
+{% extends "admin/base.html" %}
+{% block title %}Webhook 紀錄{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <i class="bi bi-list-ul fs-4"></i>
+  <div>
+    <h1>Webhook 紀錄</h1>
+  </div>
+</div>
+
+<div class="card p-4">
+  <p class="text-muted small mb-3">
+    <i class="bi bi-info-circle"></i>
+    顯示最近 10 筆 LINE 發過來的 Webhook。每次重新部署後會清空。
+  </p>
+
+  {% if webhooks %}
+    {% for wb in webhooks %}
+      <div class="border rounded mb-3 overflow-hidden">
+        <div class="bg-light px-3 py-2 d-flex justify-content-between align-items-center">
+          <span class="fw-semibold small">Webhook #{{ loop.index }}</span>
+          <span class="badge bg-secondary">{{ wb.events | length }} event(s)</span>
+        </div>
+        {% for evt in wb.get('events', []) %}
+          {% set msg = evt.get('message', {}) %}
+          <div class="px-3 py-2 border-top">
+            <div class="d-flex gap-2 flex-wrap mb-1">
+              <span class="badge bg-{{ 'success' if msg.get('type') == 'image' else 'primary' }}">
+                {{ msg.get('type', '?') }}
+              </span>
+              <span class="badge bg-secondary">{{ evt.get('source', {}).get('type', '?') }}</span>
+              {% if msg.get('quotedMessageId') %}
+                <span class="badge bg-warning text-dark">
+                  <i class="bi bi-reply"></i> quotedMessageId: {{ msg.get('quotedMessageId') }}
+                </span>
+              {% endif %}
+            </div>
+            {% if msg.get('text') %}
+              <div class="text-muted small font-monospace">
+                text: {{ msg.get('text', '')[:100] }}
+              </div>
+            {% endif %}
+            <div class="text-muted" style="font-size:.75rem">
+              msg_id: {{ msg.get('id', '?') }}
+            </div>
+          </div>
+        {% else %}
+          <div class="px-3 py-2 text-muted small">（無 events）</div>
+        {% endfor %}
+      </div>
+    {% endfor %}
+  {% else %}
+    <div class="text-center text-muted py-5">
+      <i class="bi bi-inbox fs-1 d-block mb-2"></i>
+      尚無紀錄。在 LINE 傳訊息後重新整理此頁面。
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
