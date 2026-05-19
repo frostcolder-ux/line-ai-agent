@@ -1,6 +1,7 @@
 import os
 import base64
 import time
+import requests
 import anthropic
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
@@ -9,7 +10,6 @@ from linebot.v3.messaging import (
     Configuration,
     ApiClient,
     MessagingApi,
-    MessagingApiBlob,
     ReplyMessageRequest,
     TextMessage,
 )
@@ -18,7 +18,8 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageCo
 app = Flask(__name__)
 
 # LINE config
-configuration = Configuration(access_token=os.environ["LINE_CHANNEL_ACCESS_TOKEN"])
+LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
+configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
 
 # Anthropic client
@@ -31,12 +32,10 @@ TRIGGER_KEYWORDS = [k.strip() for k in os.environ.get("TRIGGER_KEYWORDS", "小�
 conversation_history: dict[str, list] = {}
 
 # Track users who recently triggered the bot (for group image handling)
-# Format: {user_id: timestamp}
 triggered_users: dict[str, float] = {}
 TRIGGER_WINDOW_SECONDS = 600  # 10 minutes
 
 
-# Load system prompt
 def load_system_prompt() -> str:
     prompt_path = os.path.join(os.path.dirname(__file__), "prompts", "selvans.txt")
     try:
@@ -59,7 +58,6 @@ def is_group_source(event: MessageEvent) -> bool:
 def get_ai_reply(user_id: str, user_message: str) -> str:
     history = conversation_history.setdefault(user_id, [])
 
-    # Strip trigger keywords from the actual query
     query = user_message
     for kw in TRIGGER_KEYWORDS:
         query = query.replace(kw, "").strip()
@@ -68,7 +66,6 @@ def get_ai_reply(user_id: str, user_message: str) -> str:
 
     history.append({"role": "user", "content": query})
 
-    # Keep last 10 turns to avoid token overflow
     if len(history) > 20:
         history = history[-20:]
         conversation_history[user_id] = history
@@ -85,43 +82,55 @@ def get_ai_reply(user_id: str, user_message: str) -> str:
     return reply_text
 
 
-def analyze_image(user_id: str, image_bytes: bytes) -> str:
+def download_image(message_id: str) -> tuple[bytes, str]:
+    """Download image from LINE servers. Returns (image_bytes, media_type)."""
+    url = f"https://api-data.line.me/v2/bot/message/{message_id}/content"
+    headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
+    resp = requests.get(url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+    return resp.content, content_type
+
+
+def analyze_image(user_id: str, image_bytes: bytes, media_type: str = "image/jpeg") -> str:
     """Send image to Claude Vision for plant disease/pest analysis."""
     image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
 
-    history = conversation_history.setdefault(user_id, [])
-
-    user_content = [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": image_b64,
-            },
-        },
-        {
-            "type": "text",
-            "text": "請分析這張照片中植物的狀況，判斷是否有病蟲害、營養缺乏或其他問題，並提供具體的建議處理方式。如果照片不是植物，請描述你看到的內容並提供相關協助。",
-        },
-    ]
-
-    history.append({"role": "user", "content": user_content})
-
-    # Keep last 20 messages
-    if len(history) > 20:
-        history = history[-20:]
-        conversation_history[user_id] = history
-
+    # Use a fresh message list for image analysis (don't pollute text history with base64)
     response = claude.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=1024,
         system=SYSTEM_PROMPT,
-        messages=history,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": image_b64,
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": "請分析這張照片中植物的狀況，判斷是否有病蟲害、營養缺乏或其他問題，並提供具體的建議處理方式。如果照片不是植物，請描述你看到的內容並提供相關協助。",
+                    },
+                ],
+            }
+        ],
     )
 
     reply_text = response.content[0].text
+
+    # Save a text summary to conversation history (avoid storing base64)
+    history = conversation_history.setdefault(user_id, [])
+    history.append({"role": "user", "content": "[用戶傳送了一張植物照片請求病蟲害分析]"})
     history.append({"role": "assistant", "content": reply_text})
+    if len(history) > 20:
+        conversation_history[user_id] = history[-20:]
+
     return reply_text
 
 
@@ -157,7 +166,7 @@ def handle_message(event: MessageEvent):
     if not is_triggered(user_text):
         return
 
-    # Record that this user triggered the bot (for group image handling)
+    # Record trigger time for group image gating
     triggered_users[user_id] = time.time()
 
     reply_text = get_ai_reply(user_id, user_text)
@@ -168,18 +177,18 @@ def handle_message(event: MessageEvent):
 def handle_image(event: MessageEvent):
     user_id = event.source.user_id
 
-    # In group/room chats, only respond if user triggered the bot recently
+    # In group/room: only respond if user triggered the bot recently
     if is_group_source(event):
         last_trigger = triggered_users.get(user_id, 0)
         if time.time() - last_trigger > TRIGGER_WINDOW_SECONDS:
-            return  # Ignore images from non-triggered users in groups
+            return
 
-    # Download image content
-    with ApiClient(configuration) as api_client:
-        blob_api = MessagingApiBlob(api_client)
-        image_bytes = blob_api.get_message_content(event.message.id)
+    try:
+        image_bytes, media_type = download_image(event.message.id)
+        reply_text = analyze_image(user_id, image_bytes, media_type)
+    except Exception as e:
+        reply_text = f"抱歉，照片讀取失敗，請再試一次。（錯誤：{type(e).__name__}）"
 
-    reply_text = analyze_image(user_id, image_bytes)
     send_reply(event.reply_token, reply_text)
 
 
