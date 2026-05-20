@@ -95,11 +95,62 @@ def setup_scheduler(push_fn, get_config):
     return _scheduler
 
 
+def add_group_task(push_fn, group_id: str, group_name: str = ""):
+    """
+    動態新增一個群組的週排程任務，同時更新 config.json 並立即生效。
+    小凡被加入新群組時呼叫此函式。
+    """
+    import json, os
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+
+    # 讀取現有設定
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+
+    tasks = cfg.setdefault("scheduled_tasks", [])
+
+    # 避免重複加入
+    if any(t.get("group_id") == group_id for t in tasks):
+        log(f"Group {group_id} already has a scheduled task, skipping")
+        return False
+
+    task_id = f"auto_{group_id[-8:]}"
+    display = group_name or group_id[-8:]
+    new_task = {
+        "id": task_id,
+        "name": f"週報催收－{display}",
+        "group_id": group_id,
+        "message": "📋 各位夥伴好，麻煩今天下班前回報本週契作進度，謝謝配合！🌿",
+        "enabled": True,
+        "cron": {"day_of_week": "fri", "hour": 15, "minute": 0},
+    }
+    tasks.append(new_task)
+
+    # 寫回 config.json
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    log(f"New group task saved to config: {task_id}")
+
+    # 立即註冊到執行中的 scheduler
+    if _scheduler.running:
+        job_fn = _make_job(push_fn, group_id, new_task["message"], new_task["name"])
+        _scheduler.add_job(
+            job_fn,
+            CronTrigger(day_of_week="fri", hour=15, minute=0, timezone="Asia/Taipei"),
+            id=task_id,
+            replace_existing=True,
+            name=new_task["name"],
+        )
+        log(f"Scheduler job registered immediately: {task_id}")
+
+    return True
+
+
 def reload_tasks(push_fn, get_config):
-    """
-    重新載入排程任務（例如管理員在後台修改設定後呼叫）。
-    先移除所有現有任務，再重新註冊。
-    """
+    """重新載入排程任務。"""
     log("Reloading scheduled tasks...")
     for job in _scheduler.get_jobs():
         job.remove()

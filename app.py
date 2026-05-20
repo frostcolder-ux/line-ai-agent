@@ -45,7 +45,7 @@ from linebot.v3.messaging import (
     PushMessageRequest,
     TextMessage,
 )
-from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent, JoinEvent
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "selvans-secret-2024-change-me")
@@ -395,6 +395,59 @@ def handle_message(event: MessageEvent):
                        f"⚠️ 錯誤：{type(e).__name__}\n{str(e)[:120]}")
         except Exception:
             pass
+
+
+# ── 加入群組事件 ──────────────────────────────────────────────────────────────
+
+@handler.add(JoinEvent)
+def handle_join(event: JoinEvent):
+    """
+    小凡被加入群組時自動執行：
+    1. 在群組發歡迎訊息
+    2. 自動把此群組加入週排程推播
+    3. Push 通知老闆
+    """
+    import scheduler_tasks
+
+    src = event.source
+    group_id = getattr(src, "group_id", None)
+    if not group_id:
+        return
+
+    log(f"Joined group: {group_id}")
+
+    # 1. 群組歡迎訊息
+    welcome = (
+        "大家好！我是小凡 🌿\n"
+        "思凡社會農場的 AI 小幫手，很高興加入這個群組！\n\n"
+        "你可以這樣呼叫我：\n"
+        "• 說「小凡」+ 問題 → 我來回答\n"
+        "• 傳照片後說「小凡幫我看看」→ 分析植物狀況\n"
+        "• 說「小凡記錄採收...」→ 紀錄農場資料\n\n"
+        "有任何農業問題歡迎隨時問我！🌱"
+    )
+    try:
+        send_reply(event.reply_token, welcome)
+    except Exception as e:
+        log(f"Join welcome reply failed: {e}")
+
+    # 2. 自動加入週排程
+    try:
+        added = scheduler_tasks.add_group_task(push_message, group_id)
+        log(f"Auto scheduled task added: {added}")
+    except Exception as e:
+        log(f"Auto schedule failed: {e}")
+
+    # 3. 通知老闆
+    boss_id = APP_CONFIG.get("boss_user_id", "").strip()
+    if boss_id:
+        try:
+            push_message(
+                boss_id,
+                f"📢 小凡已加入新群組！\n群組 ID：{group_id}\n週排程推播已自動啟用 ✅"
+            )
+        except Exception as e:
+            log(f"Boss notification failed: {e}")
 
 
 # ── 圖片訊息處理 ──────────────────────────────────────────────────────────────
