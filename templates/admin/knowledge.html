@@ -39,6 +39,27 @@
   </div>
 </div>
 
+{# ── 知識庫過大警告（超過 80,000 字元會被截斷）── #}
+{% if stats.total_chars > 80000 %}
+<div class="alert alert-danger d-flex gap-2 align-items-start mb-4">
+  <i class="bi bi-exclamation-triangle-fill fs-5 flex-shrink-0"></i>
+  <div>
+    <strong>⚠️ 知識庫內容過長！</strong>
+    目前共 <strong>{{ "{:,}".format(stats.total_chars) }}</strong> 字元，已超過安全上限（80,000 字元）。
+    小凡在回答時<strong>只會讀取前半部分文件</strong>，後面上傳的內容不會被參考到。<br>
+    建議：刪除不必要或重複的文件，讓知識庫保持在 80,000 字元以內。
+  </div>
+</div>
+{% elif stats.total_chars > 60000 %}
+<div class="alert alert-warning d-flex gap-2 align-items-start mb-4">
+  <i class="bi bi-exclamation-circle fs-5 flex-shrink-0"></i>
+  <div>
+    <strong>注意：知識庫已接近上限</strong>（{{ "{:,}".format(stats.total_chars) }} / 80,000 字元）。
+    請避免繼續上傳大型文件，否則可能導致 AI 回答錯誤。
+  </div>
+</div>
+{% endif %}
+
 {% if strict_mode %}
 <div class="alert alert-danger d-flex gap-2 align-items-start mb-4">
   <i class="bi bi-shield-fill-exclamation fs-5 flex-shrink-0"></i>
