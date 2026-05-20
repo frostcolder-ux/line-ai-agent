@@ -528,6 +528,10 @@ def _start_background_services():
     import monitor
     import scheduler_tasks
 
+    # 0. 初始化資料庫（有 DATABASE_URL 才會執行）
+    from db import init_db
+    init_db()
+
     # 1. 背景監控執行緒
     monitor.start_monitor(
         claude_client=claude,
