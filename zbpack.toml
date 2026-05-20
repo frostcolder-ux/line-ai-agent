@@ -2,4 +2,4 @@
 build_command = "pip install -r requirements.txt"
 
 [runtime]
-start_command = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 60"
+start_command = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 60"

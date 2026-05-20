@@ -170,15 +170,12 @@ def push_message(target_id: str, text: str):
 def get_ai_reply(user_id: str, user_message: str) -> str:
     """
     呼叫 Claude 進行文字回覆，支援 Function Calling。
-    使用 tools_handler.run_with_tools 處理工具呼叫的多輪流程。
+    若 tool use 失敗，自動降級為純文字回覆。
     """
-    from tools_handler import run_with_tools
-
     history = conversation_history.setdefault(user_id, [])
     query = strip_keywords(user_message) or "你好"
     history.append({"role": "user", "content": query})
 
-    # 限制歷史長度
     max_turns = APP_CONFIG.get("max_history_turns", 20)
     if len(history) > max_turns:
         history = history[-max_turns:]
@@ -187,10 +184,25 @@ def get_ai_reply(user_id: str, user_message: str) -> str:
     model = APP_CONFIG.get("text_model", "claude-3-5-haiku-20241022")
     system = build_system_prompt()
 
-    reply_text, updated_history = run_with_tools(claude, model, system, history)
+    # 優先嘗試 Tool Use
+    try:
+        from tools_handler import run_with_tools
+        reply_text, updated_history = run_with_tools(claude, model, system, history)
+        conversation_history[user_id] = updated_history
+        log(f"Tool use reply OK for {user_id}")
+        return reply_text
+    except Exception as tool_err:
+        log(f"Tool use FAILED ({type(tool_err).__name__}: {tool_err}), falling back to plain text")
 
-    # 同步更新歷史（run_with_tools 已 append assistant reply）
-    conversation_history[user_id] = updated_history
+    # 降級：純文字回覆（不帶 tools）
+    response = claude.messages.create(
+        model=model,
+        max_tokens=1024,
+        system=system,
+        messages=history,
+    )
+    reply_text = response.content[0].text
+    history.append({"role": "assistant", "content": reply_text})
     return reply_text
 
 
@@ -379,7 +391,8 @@ def handle_message(event: MessageEvent):
     except Exception as e:
         log(f"handle_message FATAL: {type(e).__name__}: {e}")
         try:
-            send_reply(event.reply_token, f"抱歉，我遇到了一點問題（{type(e).__name__}），請稍後再試。")
+            send_reply(event.reply_token,
+                       f"⚠️ 錯誤：{type(e).__name__}\n{str(e)[:120]}")
         except Exception:
             pass
 
