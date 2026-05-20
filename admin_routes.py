@@ -222,6 +222,123 @@ def knowledge_import():
     return redirect(url_for("admin.knowledge"))
 
 
+# ── Groups ────────────────────────────────────────────────────────────────────
+
+@admin_bp.route("/groups")
+@login_required
+def groups():
+    cfg = load_config()
+    return render_template("admin/groups.html", tasks=cfg.get("scheduled_tasks", []))
+
+
+@admin_bp.route("/groups/add", methods=["POST"])
+@login_required
+def group_add():
+    cfg = load_config()
+    tasks = cfg.setdefault("scheduled_tasks", [])
+    group_id = request.form.get("group_id", "").strip()
+
+    if not group_id:
+        flash("⚠️ 請填入群組 ID", "warning")
+        return redirect(url_for("admin.groups"))
+    if any(t.get("group_id") == group_id for t in tasks):
+        flash("⚠️ 此群組 ID 已存在", "warning")
+        return redirect(url_for("admin.groups"))
+
+    task_id = f"manual_{group_id[-8:]}"
+    new_task = {
+        "id": task_id,
+        "name": request.form.get("name", "").strip() or f"群組 {group_id[-8:]}",
+        "group_id": group_id,
+        "message": request.form.get("message", "").strip(),
+        "enabled": True,
+        "cron": {
+            "day_of_week": request.form.get("day_of_week", "fri"),
+            "hour": int(request.form.get("hour", 15)),
+            "minute": int(request.form.get("minute", 0)),
+        },
+    }
+    tasks.append(new_task)
+    save_config(cfg)
+
+    # 立即更新 scheduler
+    import app as main_app, scheduler_tasks
+    main_app.APP_CONFIG.update(cfg)
+    scheduler_tasks.add_group_task(main_app.push_message, group_id)
+
+    flash(f"✅ 已新增群組：{new_task['name']}", "success")
+    return redirect(url_for("admin.groups"))
+
+
+@admin_bp.route("/groups/edit", methods=["POST"])
+@login_required
+def group_edit():
+    cfg = load_config()
+    task_id = request.form.get("task_id", "").strip()
+    tasks = cfg.get("scheduled_tasks", [])
+
+    for task in tasks:
+        if task["id"] == task_id:
+            task["name"]    = request.form.get("name", task["name"]).strip()
+            task["message"] = request.form.get("message", "").strip()
+            task["enabled"] = "enabled" in request.form
+            task["cron"]    = {
+                "day_of_week": request.form.get("day_of_week", "fri"),
+                "hour":   int(request.form.get("hour", 15)),
+                "minute": int(request.form.get("minute", 0)),
+            }
+            break
+    else:
+        flash("⚠️ 找不到該群組設定", "warning")
+        return redirect(url_for("admin.groups"))
+
+    save_config(cfg)
+
+    # 立即重新載入 scheduler
+    import app as main_app, scheduler_tasks
+    main_app.APP_CONFIG.update(cfg)
+    scheduler_tasks.reload_tasks(main_app.push_message, lambda: cfg)
+
+    flash("✅ 已儲存並立即生效", "success")
+    return redirect(url_for("admin.groups"))
+
+
+@admin_bp.route("/groups/delete/<task_id>", methods=["POST"])
+@login_required
+def group_delete(task_id):
+    cfg = load_config()
+    before = len(cfg.get("scheduled_tasks", []))
+    cfg["scheduled_tasks"] = [
+        t for t in cfg.get("scheduled_tasks", []) if t["id"] != task_id
+    ]
+    if len(cfg["scheduled_tasks"]) < before:
+        save_config(cfg)
+        import app as main_app, scheduler_tasks
+        main_app.APP_CONFIG.update(cfg)
+        scheduler_tasks.reload_tasks(main_app.push_message, lambda: cfg)
+        flash("✅ 已刪除群組排程", "success")
+    else:
+        flash("⚠️ 找不到該群組", "warning")
+    return redirect(url_for("admin.groups"))
+
+
+@admin_bp.route("/groups/push-now/<task_id>", methods=["POST"])
+@login_required
+def group_push_now(task_id):
+    cfg = load_config()
+    task = next((t for t in cfg.get("scheduled_tasks", []) if t["id"] == task_id), None)
+    if not task:
+        flash("⚠️ 找不到該群組", "warning")
+        return redirect(url_for("admin.groups"))
+    try:
+        import app as main_app
+        main_app.push_message(task["group_id"], task["message"])
+        flash(f"✅ 已立即推播到「{task['name']}」", "success")
+    except Exception as e:
+        flash(f"❌ 推播失敗：{e}", "danger")
+    return redirect(url_for("admin.groups"))
+
+
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 @admin_bp.route("/settings", methods=["GET", "POST"])

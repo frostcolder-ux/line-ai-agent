@@ -80,6 +80,10 @@
        href="{{ url_for('admin.knowledge') }}">
       <i class="bi bi-book"></i> 農業知識庫
     </a>
+    <a class="nav-link {% if request.endpoint == 'admin.groups' %}active{% endif %}"
+       href="{{ url_for('admin.groups') }}">
+      <i class="bi bi-people"></i> 群組管理
+    </a>
     <a class="nav-link {% if request.endpoint == 'admin.settings' %}active{% endif %}"
        href="{{ url_for('admin.settings') }}">
       <i class="bi bi-gear"></i> 設定
