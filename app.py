@@ -409,6 +409,20 @@ def handle_image(event: MessageEvent):
 
 # ── 工具路由 ─────────────────────────────────────────────────────────────────
 
+@app.route("/debug/models", methods=["GET"])
+def debug_models():
+    """列出 Anthropic API 上可用的模型，幫助確認正確的模型名稱。"""
+    try:
+        models = claude.models.list()
+        return jsonify({
+            "available_models": [m.id for m in models.data],
+            "current_text_model": APP_CONFIG.get("text_model"),
+            "current_image_model": APP_CONFIG.get("image_model"),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "type": type(e).__name__}), 500
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return {
