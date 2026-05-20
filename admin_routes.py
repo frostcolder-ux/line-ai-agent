@@ -124,12 +124,26 @@ def prompt():
 @admin_bp.route("/knowledge")
 @login_required
 def knowledge():
-    from knowledge_manager import get_kb_stats
+    from knowledge_manager import get_kb_stats, has_vector_search
     stats = get_kb_stats()
     cfg = load_config()
     return render_template("admin/knowledge.html",
                            stats=stats,
-                           strict_mode=cfg.get("strict_kb_mode", False))
+                           strict_mode=cfg.get("strict_kb_mode", False),
+                           vector_search=has_vector_search())
+
+
+@admin_bp.route("/knowledge/reembed", methods=["POST"])
+@login_required
+def knowledge_reembed():
+    """重新對所有文件建立向量索引（升級後補建用）。"""
+    from knowledge_manager import reembed_all
+    result = reembed_all()
+    if "error" in result:
+        flash(f"⚠️ 無法建立向量索引：{result['error']}", "danger")
+    else:
+        flash(f"✅ 向量索引建立完成：{result['docs']} 份文件、{result['chunks']} 段向量", "success")
+    return redirect(url_for("admin.knowledge"))
 
 
 @admin_bp.route("/knowledge/upload", methods=["POST"])

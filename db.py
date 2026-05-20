@@ -37,6 +37,8 @@ def init_db():
         return
 
     sql = """
+        CREATE EXTENSION IF NOT EXISTS vector;
+
         CREATE TABLE IF NOT EXISTS knowledge_docs (
             id          VARCHAR(8)   PRIMARY KEY,
             filename    TEXT         NOT NULL,
@@ -44,6 +46,16 @@ def init_db():
             chars       INTEGER      NOT NULL,
             uploaded_at TEXT         NOT NULL,
             preview     TEXT         NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS knowledge_chunks (
+            id          SERIAL       PRIMARY KEY,
+            doc_id      TEXT         NOT NULL,
+            filename    TEXT         NOT NULL,
+            chunk_idx   INTEGER      NOT NULL,
+            content     TEXT         NOT NULL,
+            embedding   vector(512),
+            created_at  TEXT         NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS farm_harvests (

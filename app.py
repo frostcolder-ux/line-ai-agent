@@ -161,29 +161,23 @@ def get_system_prompt() -> str:
     )
 
 
-_KB_MAX_CHARS = 80_000  # 約 2 萬 token，安全上限
+def build_system_prompt(query: str = "") -> str:
+    """
+    動態組合系統提示：人格設定 + 知識庫（依嚴格模式切換）。
 
-
-def build_system_prompt() -> str:
-    """動態組合系統提示：人格設定 + 知識庫（依嚴格模式切換）。"""
-    from knowledge_manager import get_all_content
+    query：使用者的問題。有向量搜尋時只注入最相關段落；
+           無向量搜尋時退回截斷全文模式。
+    """
+    from knowledge_manager import search_relevant_chunks, has_vector_search
     base = get_system_prompt()
-    kb_content = get_all_content()
+
+    kb_content = search_relevant_chunks(query)   # 有 query → 語意搜尋；無 → 全文
 
     if not kb_content.strip():
         return base
 
-    # 防止 prompt 過長導致 400 BadRequestError
-    truncated = False
-    if len(kb_content) > _KB_MAX_CHARS:
-        kb_content = kb_content[:_KB_MAX_CHARS]
-        # 截斷到最後一個完整段落，避免切斷句子
-        last_break = kb_content.rfind("\n\n")
-        if last_break > _KB_MAX_CHARS // 2:
-            kb_content = kb_content[:last_break]
-        kb_content += "\n\n⚠️（知識庫內容過長，已截取前半部分，建議刪除不必要的文件以提升回答品質）"
-        truncated = True
-        log(f"build_system_prompt: KB truncated to {len(kb_content)} chars")
+    mode_note = "（語意搜尋：最相關段落）" if (query and has_vector_search()) else ""
+    log(f"build_system_prompt: KB {len(kb_content)} chars {mode_note}")
 
     if APP_CONFIG.get("strict_kb_mode", False):
         return (
@@ -225,7 +219,7 @@ def get_ai_reply(user_id: str, user_message: str) -> str:
         conversation_history[user_id] = history
 
     model = APP_CONFIG.get("text_model", "claude-3-5-haiku-20241022")
-    system = build_system_prompt()
+    system = build_system_prompt(query=query)   # 傳入問題 → 語意搜尋最相關段落
 
     # 優先嘗試 Tool Use
     try:
@@ -270,7 +264,7 @@ def analyze_image(user_id: str, image_bytes: bytes, media_type: str, query: str)
     response = claude.messages.create(
         model=APP_CONFIG.get("image_model", "claude-3-5-sonnet-20241022"),
         max_tokens=1024,
-        system=build_system_prompt(),
+        system=build_system_prompt(query=query),   # 圖片問題也做語意搜尋
         messages=[{
             "role": "user",
             "content": [

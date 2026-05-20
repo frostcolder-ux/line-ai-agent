@@ -39,6 +39,34 @@
   </div>
 </div>
 
+{# ── 向量搜尋狀態 ── #}
+{% if vector_search %}
+<div class="alert alert-success d-flex justify-content-between align-items-center mb-4">
+  <div class="d-flex gap-2 align-items-start">
+    <i class="bi bi-lightning-charge-fill fs-5 flex-shrink-0"></i>
+    <div>
+      <strong>向量語意搜尋已啟用 ✅</strong><br>
+      <span class="small">小凡回答時會自動從知識庫找出最相關段落，不受文件總量限制。</span>
+    </div>
+  </div>
+  <form method="post" action="{{ url_for('admin.knowledge_reembed') }}"
+        onsubmit="return confirm('重新對所有文件建立向量索引？首次設定或更新 API Key 後使用。')">
+    <button type="submit" class="btn btn-sm btn-outline-success ms-3 text-nowrap">
+      <i class="bi bi-arrow-repeat"></i> 重新建立向量索引
+    </button>
+  </form>
+</div>
+{% else %}
+<div class="alert alert-warning d-flex gap-2 align-items-start mb-4">
+  <i class="bi bi-exclamation-triangle fs-5 flex-shrink-0"></i>
+  <div>
+    <strong>向量語意搜尋尚未啟用</strong>（目前為截斷全文模式，上限 80,000 字元）<br>
+    <span class="small">前往 Render → Environment 新增 <code>VOYAGE_API_KEY</code> 即可啟用。
+    免費申請：<a href="https://dash.voyageai.com" target="_blank">dash.voyageai.com</a></span>
+  </div>
+</div>
+{% endif %}
+
 {# ── 知識庫過大警告（超過 80,000 字元會被截斷）── #}
 {% if stats.total_chars > 80000 %}
 <div class="alert alert-danger d-flex gap-2 align-items-start mb-4">
