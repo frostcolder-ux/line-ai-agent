@@ -18,19 +18,38 @@
   </div>
 </div>
 
-{# ── 立即測試排程 ── #}
+{# ── 測試工具列 ── #}
 <div class="card p-4 mb-4">
-  <div class="d-flex justify-content-between align-items-center mb-2">
-    <div>
-      <h6 class="fw-bold mb-0"><i class="bi bi-lightning-charge text-warning"></i> 立即測試排程推播</h6>
-      <div class="small text-muted mt-1">點擊後立刻把所有「已啟用」群組的推播訊息發出去，用來確認排程是否正常。</div>
+  <h6 class="fw-bold mb-3"><i class="bi bi-tools text-secondary"></i> 測試工具</h6>
+  <div class="row g-3">
+
+    {# 測試排程 #}
+    <div class="col-md-6">
+      <div class="border rounded-3 p-3 h-100">
+        <div class="fw-semibold mb-1"><i class="bi bi-lightning-charge text-warning"></i> 立即觸發全部排程</div>
+        <div class="small text-muted mb-2">把所有已啟用群組的推播訊息立刻發出去，確認排程系統正常。</div>
+        <button id="testSchedulerBtn" class="btn btn-warning btn-sm text-dark fw-semibold w-100"
+                onclick="runTestScheduler()">
+          <i class="bi bi-send-check"></i> 觸發全部排程
+        </button>
+        <div id="testSchedulerResult" class="mt-2" style="display:none"></div>
+      </div>
     </div>
-    <button id="testSchedulerBtn" class="btn btn-warning text-dark fw-semibold"
-            onclick="runTestScheduler()">
-      <i class="bi bi-send-check"></i> 立即觸發全部排程
-    </button>
+
+    {# 測試老闆私訊 #}
+    <div class="col-md-6">
+      <div class="border rounded-3 p-3 h-100">
+        <div class="fw-semibold mb-1"><i class="bi bi-person-check text-primary"></i> 測試發私訊給老闆</div>
+        <div class="small text-muted mb-2">確認小凡能否主動傳私訊到你的 LINE，預警功能依賴此設定。</div>
+        <button id="testBossBtn" class="btn btn-primary btn-sm fw-semibold w-100"
+                onclick="runTestBoss()">
+          <i class="bi bi-chat-dots"></i> 發測試私訊給老闆
+        </button>
+        <div id="testBossResult" class="mt-2" style="display:none"></div>
+      </div>
+    </div>
+
   </div>
-  <div id="testSchedulerResult" class="mt-2" style="display:none"></div>
 </div>
 
 {# ── 群組列表 ── #}
@@ -246,6 +265,39 @@ document.getElementById('editModal').addEventListener('show.bs.modal', e => {
   document.getElementById('edit-minute').value    = btn.dataset.taskMinute;
   document.getElementById('edit-enabled').checked = btn.dataset.taskEnabled === 'true';
 });
+
+// 測試發私訊給老闆
+async function runTestBoss() {
+  const btn = document.getElementById('testBossBtn');
+  const resultBox = document.getElementById('testBossResult');
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 發送中…';
+  resultBox.style.display = 'none';
+
+  try {
+    const res = await fetch('/admin/test-boss-notify', { method: 'POST' });
+    const data = await res.json();
+
+    if (data.success) {
+      resultBox.innerHTML = `<div class="alert alert-success py-2 mb-0 small">
+        ✅ 已發送！老闆 ID：<code>${data.boss_id}</code>（來源：${data.source === 'env_var' ? '環境變數' : 'config.json'}）<br>
+        請檢查你的 LINE 是否收到測試訊息。
+      </div>`;
+    } else {
+      resultBox.innerHTML = `<div class="alert alert-danger py-2 mb-0 small">
+        ❌ 失敗：${data.error}<br>
+        ${data.hint ? '<span class="text-muted">' + data.hint + '</span>' : ''}
+      </div>`;
+    }
+  } catch (err) {
+    resultBox.innerHTML = `<div class="alert alert-danger py-2 mb-0 small">❌ 網路錯誤：${err.message}</div>`;
+  }
+
+  resultBox.style.display = 'block';
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-chat-dots"></i> 發測試私訊給老闆';
+}
 
 // 立即測試排程
 async function runTestScheduler() {

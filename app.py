@@ -539,6 +539,28 @@ def test_scheduler():
     return jsonify({"triggered": len(results), "results": results})
 
 
+@app.route("/admin/test-boss-notify", methods=["POST"])
+def test_boss_notify():
+    """測試發私訊給老闆，確認 BOSS_LINE_USER_ID 設定是否正確。"""
+    from flask import session
+    if not session.get("admin_logged_in"):
+        return {"error": "unauthorized"}, 401
+    boss_id = get_boss_id()
+    if not boss_id:
+        return jsonify({
+            "success": False,
+            "error": "老闆 ID 未設定",
+            "hint": "請在 Render → Environment 新增 BOSS_LINE_USER_ID，或在後台設定 boss_user_id"
+        }), 400
+    try:
+        notify_boss("✅ 測試成功！小凡可以正常發送私訊給老闆 🎉\n（這是從後台觸發的測試訊息）")
+        log(f"test-boss-notify: sent to {boss_id[:10]}...")
+        return jsonify({"success": True, "boss_id": boss_id[:10] + "...", "source": "env_var" if BOSS_LINE_USER_ID else "config"})
+    except Exception as e:
+        log(f"test-boss-notify ERROR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/debug/webhook", methods=["GET"])
 def debug_webhook():
     return jsonify({"count": len(debug_webhooks), "webhooks": debug_webhooks})
