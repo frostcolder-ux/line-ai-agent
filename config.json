@@ -14,9 +14,9 @@
     {
       "id": "weekly_contract_reminder",
       "name": "每週契作進度催收",
-      "group_id": "",
+      "group_id": "C263633454f61a28dae6b47b64171797d",
       "message": "📋 各位夥伴好，麻煩今天下班前回報本週契作進度，謝謝配合！🌿",
-      "enabled": false,
+      "enabled": true,
       "cron": {
         "day_of_week": "fri",
         "hour": 15,
