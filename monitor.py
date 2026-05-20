@@ -125,25 +125,21 @@ def start_monitor(claude_client, get_config, push_fn):
 
     參數：
         claude_client  : anthropic.Anthropic 實例
-        get_config     : callable，回傳當前 APP_CONFIG dict（每次都重新讀，支援動態設定）
-        push_fn        : callable(target_id: str, text: str)，發送 LINE Push Message
+        get_config     : callable，回傳當前 APP_CONFIG dict
+        push_fn        : callable(text: str)，發送預警私訊給老闆
+                         傳入 app.notify_boss 即可，它內部自動找老闆 ID
     """
 
     def _worker():
         log("Background monitor thread started ✓")
         while True:
-            cfg = get_config()
-            interval  = cfg.get("monitor_interval_seconds", 300)
-            min_msgs  = cfg.get("monitor_min_messages", 5)
-            boss_id   = cfg.get("boss_user_id", "").strip()
-            model     = cfg.get("text_model", "claude-3-5-haiku-20241022")
+            cfg      = get_config()
+            interval = cfg.get("monitor_interval_seconds", 300)
+            min_msgs = cfg.get("monitor_min_messages", 5)
+            model    = cfg.get("text_model", "claude-haiku-4-5-20251001")
 
             # 等待下一個分析週期
             time.sleep(interval)
-
-            if not boss_id:
-                # 尚未設定老闆 User ID，不發送預警
-                continue
 
             snapshot = _drain_buffer()
             if not snapshot:
@@ -160,10 +156,10 @@ def start_monitor(claude_client, get_config, push_fn):
                 if result and result.get("alert"):
                     text = _format_alert(ctx_key, result)
                     try:
-                        push_fn(boss_id, text)
-                        log(f"Alert pushed to boss: {result.get('summary')}")
+                        push_fn(text)          # ← 只傳 text，老闆 ID 由 notify_boss 管理
+                        log(f"Alert sent to boss: {result.get('summary')}")
                     except Exception as e:
-                        log(f"Failed to push alert: {e}")
+                        log(f"Failed to send alert: {e}")
 
     t = threading.Thread(target=_worker, daemon=True, name="monitor-thread")
     t.start()

@@ -55,6 +55,10 @@ configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
 claude = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
+# 老闆 LINE User ID：優先讀環境變數，其次讀 config.json
+# 在 Render → Environment 新增 BOSS_LINE_USER_ID 即可
+BOSS_LINE_USER_ID = os.environ.get("BOSS_LINE_USER_ID", "").strip()
+
 BASE_DIR = os.path.dirname(__file__)
 
 
@@ -98,6 +102,30 @@ debug_webhooks: list[dict] = []
 
 def log(msg: str):
     print(f"[APP] {msg}", flush=True, file=sys.stderr)
+
+
+def get_boss_id() -> str:
+    """
+    取得老闆 LINE User ID。
+    優先順序：環境變數 BOSS_LINE_USER_ID > config.json boss_user_id
+    """
+    return BOSS_LINE_USER_ID or APP_CONFIG.get("boss_user_id", "").strip()
+
+
+def notify_boss(text: str):
+    """
+    主動發私訊給老闆。
+    使用 Push Message API，與群組對話完全獨立。
+    """
+    boss_id = get_boss_id()
+    if not boss_id:
+        log("notify_boss: boss_id 未設定，跳過推播")
+        return
+    try:
+        push_message(boss_id, text)
+        log(f"notify_boss: 推播成功 → {boss_id[:10]}...")
+    except Exception as e:
+        log(f"notify_boss ERROR: {type(e).__name__}: {e}")
 
 
 def load_file(path: str, default: str = "") -> str:
@@ -298,8 +326,18 @@ def callback():
         for evt in payload.get("events", []):
             msg = evt.get("message", {})
             src = evt.get("source", {})
-            msg_id = msg.get("id")
+            msg_id    = msg.get("id")
             quoted_id = msg.get("quotedMessageId")
+
+            # ── User ID Debug：每則訊息都印出，方便在 Render Log 查詢 ──
+            sender_uid = src.get("userId") or src.get("user_id", "?")
+            group_id   = src.get("groupId") or src.get("group_id", "")
+            print(
+                f"[USER_ID_DEBUG] Sender: {sender_uid} | "
+                f"Group: {group_id or '(private)'} | "
+                f"type: {msg.get('type', evt.get('type', '?'))}",
+                flush=True, file=sys.stderr
+            )
 
             log(f"EVENT type={evt.get('type')} msg_type={msg.get('type')} "
                 f"msg_id={msg_id} quoted={quoted_id}")
@@ -438,16 +476,8 @@ def handle_join(event: JoinEvent):
     except Exception as e:
         log(f"Auto schedule failed: {e}")
 
-    # 3. 通知老闆
-    boss_id = APP_CONFIG.get("boss_user_id", "").strip()
-    if boss_id:
-        try:
-            push_message(
-                boss_id,
-                f"📢 小凡已加入新群組！\n群組 ID：{group_id}\n週排程推播已自動啟用 ✅"
-            )
-        except Exception as e:
-            log(f"Boss notification failed: {e}")
+    # 3. 主動私訊通知老闆（使用 notify_boss，自動讀取 env var 或 config）
+    notify_boss(f"📢 小凡已加入新群組！\n群組 ID：{group_id}\n週排程推播已自動啟用 ✅")
 
 
 # ── 圖片訊息處理 ──────────────────────────────────────────────────────────────
@@ -480,10 +510,33 @@ def debug_models():
 def health():
     return {
         "status": "ok",
-        "text_model": APP_CONFIG.get("text_model"),
-        "image_model": APP_CONFIG.get("image_model"),
-        "boss_configured": bool(APP_CONFIG.get("boss_user_id")),
+        "text_model":      APP_CONFIG.get("text_model"),
+        "image_model":     APP_CONFIG.get("image_model"),
+        "boss_configured": bool(get_boss_id()),
+        "boss_source":     "env_var" if BOSS_LINE_USER_ID else ("config" if APP_CONFIG.get("boss_user_id") else "not_set"),
     }, 200
+
+
+@app.route("/admin/test-scheduler", methods=["POST"])
+def test_scheduler():
+    """手動立即觸發所有排程任務，測試推播是否正常。"""
+    from flask import session
+    if not session.get("admin_logged_in"):
+        return {"error": "unauthorized"}, 401
+    import scheduler_tasks
+    cfg   = load_config()
+    tasks = cfg.get("scheduled_tasks", [])
+    results = []
+    for task in tasks:
+        if not task.get("enabled") or not task.get("group_id"):
+            continue
+        try:
+            push_message(task["group_id"], task["message"])
+            results.append({"task": task["name"], "status": "sent"})
+            log(f"Test scheduler: sent to {task['name']}")
+        except Exception as e:
+            results.append({"task": task["name"], "status": f"error: {e}"})
+    return jsonify({"triggered": len(results), "results": results})
 
 
 @app.route("/debug/webhook", methods=["GET"])
@@ -532,11 +585,11 @@ def _start_background_services():
     from db import init_db
     init_db()
 
-    # 1. 背景監控執行緒
+    # 1. 背景監控執行緒（push_fn 改用 notify_boss，自動讀取 env var / config）
     monitor.start_monitor(
         claude_client=claude,
         get_config=lambda: APP_CONFIG,
-        push_fn=push_message,
+        push_fn=notify_boss,   # ← 直接傳 notify_boss，內部自動找老闆 ID
     )
 
     # 2. APScheduler 排程器
