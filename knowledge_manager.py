@@ -76,9 +76,39 @@ def _vec_str(embedding: list[float]) -> str:
 # 文件切段
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _extract_keywords(text: str) -> list[str]:
+    """
+    從問題中提取關鍵詞：
+    - 中文：取 2 字以上的詞語 + 2-gram 切分
+    - 英文：取 3 字母以上的單詞
+    - 過濾常見虛詞/停用字
+    """
+    import re
+    STOPWORDS = {
+        '什麼', '如何', '為何', '為什麼', '怎麼', '怎樣', '可以', '是否',
+        '請問', '告訴', '我要', '想知', '知道', '幫我', '這個', '那個',
+        '有沒', '有沒有', '一些', '應該', '需要', '可能', '是的', '對嗎',
+        '嗎', '呢', '啊', '吧', '喔', '哦', '嗯',
+    }
+    clean   = re.sub(r'[^\w一-鿿]', ' ', text)
+    tokens  = []
+    # 中文詞語
+    for word in re.findall(r'[一-鿿]+', clean):
+        if len(word) >= 2 and word not in STOPWORDS:
+            tokens.append(word)
+            for i in range(len(word) - 1):           # 2-gram
+                gram = word[i:i+2]
+                if gram not in STOPWORDS:
+                    tokens.append(gram)
+    # 英文單詞
+    for word in re.findall(r'[a-zA-Z]{3,}', clean):
+        tokens.append(word.lower())
+    return list(set(tokens))
+
+
 def chunk_text(text: str) -> list[str]:
     """
-    把長文字切成有重疊的小段落，適合嵌入與語意搜尋。
+    把長文字切成有重疊的小段落，適合關鍵字搜尋與嵌入。
     優先在段落/句子邊界切斷，保持語義完整。
     """
     chunks = []
@@ -107,31 +137,42 @@ def chunk_text(text: str) -> list[str]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _pg_store_chunks(doc_id: str, filename: str, content: str):
-    """切段文件並儲存嵌入向量到 knowledge_chunks。"""
+    """
+    切段文件並儲存到 knowledge_chunks。
+    - 有 VOYAGE_API_KEY → 同時儲存嵌入向量（向量搜尋）
+    - 無 VOYAGE_API_KEY → 只儲存文字（關鍵字搜尋仍可用）
+    """
     chunks = chunk_text(content)
     if not chunks:
         return 0
 
-    embeddings = _embed(chunks, input_type="document")
-    if embeddings is None:
-        log(f"無嵌入向量可用，略過 chunks 儲存（{filename}）")
-        return 0
+    # 嘗試建立向量（失敗不影響儲存）
+    embeddings = _embed(chunks, input_type="document")  # None 表示無 API Key
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     from db import get_conn
     conn = get_conn()
     cur  = conn.cursor()
     cur.execute("DELETE FROM knowledge_chunks WHERE doc_id = %s", (doc_id,))
-    for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
-        cur.execute(
-            "INSERT INTO knowledge_chunks (doc_id, filename, chunk_idx, content, embedding, created_at) "
-            "VALUES (%s, %s, %s, %s, %s::vector, %s)",
-            (doc_id, filename, i, chunk, _vec_str(emb), now)
-        )
+    for i, chunk in enumerate(chunks):
+        emb = embeddings[i] if embeddings else None
+        if emb is not None:
+            cur.execute(
+                "INSERT INTO knowledge_chunks (doc_id, filename, chunk_idx, content, embedding, created_at) "
+                "VALUES (%s, %s, %s, %s, %s::vector, %s)",
+                (doc_id, filename, i, chunk, _vec_str(emb), now)
+            )
+        else:
+            cur.execute(
+                "INSERT INTO knowledge_chunks (doc_id, filename, chunk_idx, content, created_at) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (doc_id, filename, i, chunk, now)
+            )
     conn.commit()
     cur.close()
     conn.close()
-    log(f"儲存 {len(chunks)} 段向量到 DB（{filename}）")
+    mode = "含向量" if embeddings else "純文字（關鍵字搜尋）"
+    log(f"儲存 {len(chunks)} 段（{mode}）到 DB（{filename}）")
     return len(chunks)
 
 
@@ -180,13 +221,82 @@ def _pg_search_chunks(query: str, top_k: int = _TOP_K) -> list[dict]:
     return [{"filename": r[0], "content": r[1], "similarity": r[2]} for r in rows]
 
 
+def _pg_keyword_search(query: str, top_k: int = _TOP_K) -> list[dict]:
+    """
+    關鍵字搜尋：從 knowledge_chunks 找出包含最多關鍵字的段落。
+    不需要 Voyage AI，純 SQL，完全免費。
+    """
+    keywords = _extract_keywords(query)
+    if not keywords:
+        return []
+
+    from db import get_conn
+    conn = get_conn()
+    cur  = conn.cursor()
+    cur.execute("SELECT filename, content FROM knowledge_chunks ORDER BY doc_id, chunk_idx")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    scored = []
+    for filename, content in rows:
+        # 計算命中幾個關鍵字（每個關鍵字最多算一次）
+        score = sum(1 for kw in keywords if kw in content)
+        if score > 0:
+            scored.append((score, filename, content))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [{"filename": r[1], "content": r[2], "score": r[0]} for r in scored[:top_k]]
+
+
+def _json_keyword_search(query: str, top_k: int = _TOP_K) -> str:
+    """
+    JSON 模式的關鍵字搜尋：在記憶體中即時切段並比對（無 DB 時使用）。
+    """
+    keywords = _extract_keywords(query)
+    if not keywords:
+        content = _json_get_all_content()
+        return content[:_KB_MAX_CHARS] if len(content) > _KB_MAX_CHARS else content
+
+    db     = _json_load_kb()
+    scored = []
+    for doc in db.get("documents", []):
+        for chunk in chunk_text(doc["content"]):
+            score = sum(1 for kw in keywords if kw in chunk)
+            if score > 0:
+                scored.append((score, doc["filename"], chunk))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:top_k]
+    if not top:
+        return ""
+    parts = [f"### 來源：{r[1]}（命中 {r[0]} 個關鍵字）\n{r[2]}" for r in top]
+    return "\n\n---\n\n".join(parts)
+
+
+def has_keyword_search() -> bool:
+    """關鍵字搜尋只需要有 chunks（PostgreSQL 模式自動儲存）。"""
+    from db import is_postgres
+    if not is_postgres():
+        return True   # JSON 模式也支援，直接在記憶體切段搜尋
+    try:
+        from db import get_conn
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM knowledge_chunks")
+        count = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        return count > 0
+    except Exception:
+        return False
+
+
 def reembed_all() -> dict:
-    """重新對所有文件建立向量索引（升級時使用）。"""
+    """重新對所有文件建立 chunks（+ 向量，若有 API Key）。"""
     from db import is_postgres
     if not is_postgres():
         return {"error": "僅支援 PostgreSQL 模式"}
-    if not has_vector_search():
-        return {"error": "請先設定 VOYAGE_API_KEY 環境變數"}
 
     kb   = _pg_load_kb()
     docs = kb.get("documents", [])
@@ -194,7 +304,8 @@ def reembed_all() -> dict:
     for doc in docs:
         n = _pg_store_chunks(doc["id"], doc["filename"], doc["content"])
         total_chunks += n
-    return {"docs": len(docs), "chunks": total_chunks}
+    mode = "向量+關鍵字" if has_vector_search() else "關鍵字"
+    return {"docs": len(docs), "chunks": total_chunks, "mode": mode}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -389,17 +500,21 @@ def get_all_content() -> str:
 
 def search_relevant_chunks(query: str, top_k: int = _TOP_K) -> str:
     """
-    根據問題語意，從知識庫找出最相關的段落，回傳格式化文字。
+    根據問題找出最相關的知識庫段落，回傳格式化文字供 system prompt 使用。
 
-    優先使用向量搜尋（需要 VOYAGE_API_KEY + PostgreSQL）。
-    若不可用，自動降級為截斷全文模式。
+    搜尋策略（依優先順序）：
+    1. 向量語意搜尋（需要 VOYAGE_API_KEY）  ← 最準確
+    2. 關鍵字搜尋（免費，自動可用）          ← 中等準確，無上限
+    3. 截斷全文（最後手段，限 80,000 字元）   ← 保底
+
+    搜不到任何相關資料時回傳空字串 → build_system_prompt 不注入知識庫
+    → Claude 會說「查無相關資料」而不是亂回答。
     """
     if not query.strip():
-        # 無查詢詞：直接截斷全文
         content = get_all_content()
         return content[:_KB_MAX_CHARS] if len(content) > _KB_MAX_CHARS else content
 
-    # 向量語意搜尋
+    # ── 第一層：向量語意搜尋 ────────────────────────────────────────────────
     if has_vector_search():
         try:
             results = _pg_search_chunks(query, top_k=top_k)
@@ -408,21 +523,43 @@ def search_relevant_chunks(query: str, top_k: int = _TOP_K) -> str:
                     f"### 來源：{r['filename']}（相關度 {r['similarity']:.0%}）\n{r['content']}"
                     for r in results
                 ]
-                combined = "\n\n---\n\n".join(parts)
-                log(f"向量搜尋：找到 {len(results)} 段相關內容（最高相關度 {results[0]['similarity']:.0%}）")
-                return combined
-            else:
-                log("向量搜尋：無結果，降級為全文模式")
+                log(f"[搜尋] 向量：{len(results)} 段，最高 {results[0]['similarity']:.0%}")
+                return "\n\n---\n\n".join(parts)
+            log("[搜尋] 向量：無結果，降級關鍵字")
         except Exception as e:
-            log(f"向量搜尋失敗，降級: {e}")
+            log(f"[搜尋] 向量失敗：{e}，降級關鍵字")
 
-    # 降級：截斷全文
+    # ── 第二層：關鍵字搜尋（免費，PG chunks 或 JSON 記憶體）─────────────────
+    if _use_pg():
+        try:
+            results = _pg_keyword_search(query, top_k=top_k)
+            if results:
+                parts = [
+                    f"### 來源：{r['filename']}（命中 {r['score']} 個關鍵字）\n{r['content']}"
+                    for r in results
+                ]
+                log(f"[搜尋] 關鍵字：{len(results)} 段")
+                return "\n\n---\n\n".join(parts)
+            log("[搜尋] 關鍵字：無命中 → 回傳空（不注入知識庫）")
+            return ""   # ← 無相關資料，讓 Claude 說「查無資料」
+        except Exception as e:
+            log(f"[搜尋] 關鍵字失敗：{e}，降級全文")
+    else:
+        result = _json_keyword_search(query, top_k=top_k)
+        if result:
+            log(f"[搜尋] JSON 關鍵字：找到相關段落")
+            return result
+        log("[搜尋] JSON 關鍵字：無命中 → 回傳空")
+        return ""
+
+    # ── 第三層：截斷全文（最後手段）────────────────────────────────────────
     content = get_all_content()
     if len(content) > _KB_MAX_CHARS:
         content = content[:_KB_MAX_CHARS]
         last_break = content.rfind("\n\n")
         if last_break > _KB_MAX_CHARS // 2:
             content = content[:last_break]
+    log(f"[搜尋] 全文截斷：{len(content)} 字元")
     return content
 
 
