@@ -10,6 +10,7 @@ Function Calling (Tool Use) — 工具定義與執行
 5. Claude 產生最終自然語言回覆
 """
 import json
+import os
 import sys
 from data_store import record_harvest, add_task, query_harvests, list_tasks
 
@@ -107,7 +108,75 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "notify_boss",
+        "description": (
+            "主動傳 LINE 私訊給老闆（農場主人）。"
+            "當使用者說「告訴老闆」、「通知老闆」、「跟老闆說」、「傳訊息給老闆」、"
+            "「幫我告訴老闆」、「讓老闆知道」時使用。"
+            "這個工具會真的發出 LINE 訊息，不只是記錄。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "要傳給老闆的訊息內容，用繁體中文，清楚說明事情",
+                },
+            },
+            "required": ["message"],
+        },
+    },
 ]
+
+
+# ── 老闆私訊（直接呼叫 LINE API，避免循環引用 app.py）────────────────────────
+
+def _tool_notify_boss(message: str) -> str:
+    """
+    真正發 LINE 私訊給老闆。
+    優先讀 BOSS_LINE_USER_ID 環境變數，其次讀 config.json boss_user_id。
+    """
+    import requests
+
+    # 取老闆 ID
+    boss_id = os.environ.get("BOSS_LINE_USER_ID", "").strip()
+    if not boss_id:
+        try:
+            import json as _json
+            cfg_path = os.path.join(os.path.dirname(__file__), "config.json")
+            with open(cfg_path, encoding="utf-8") as f:
+                boss_id = _json.load(f).get("boss_user_id", "").strip()
+        except Exception:
+            pass
+
+    if not boss_id:
+        log("notify_boss tool: boss_id 未設定")
+        return json.dumps({
+            "success": False,
+            "error": "老闆 ID 未設定，請在 Render 環境變數設定 BOSS_LINE_USER_ID",
+        }, ensure_ascii=False)
+
+    token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+    try:
+        resp = requests.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"to": boss_id, "messages": [{"type": "text", "text": message}]},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        log(f"notify_boss tool: 發送成功 → {boss_id[:10]}...")
+        return json.dumps({
+            "success": True,
+            "message": f"✅ 訊息已成功傳送給老闆：「{message}」",
+        }, ensure_ascii=False)
+    except Exception as e:
+        log(f"notify_boss tool ERROR: {e}")
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
 # ── 工具執行器 ────────────────────────────────────────────────────────────────
@@ -159,6 +228,9 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
                 "count": len(tasks),
                 "tasks": tasks,
             }, ensure_ascii=False)
+
+        elif tool_name == "notify_boss":
+            return _tool_notify_boss(tool_input["message"])
 
         else:
             return json.dumps({"success": False, "error": f"未知工具：{tool_name}"}, ensure_ascii=False)
