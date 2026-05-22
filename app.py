@@ -70,8 +70,8 @@ def load_config() -> dict:
             return json.load(f)
     except Exception:
         return {
-            "text_model": "claude-3-5-haiku-20241022",
-            "image_model": "claude-3-5-sonnet-20241022",
+            "text_model": "claude-haiku-4-5-20251001",
+            "image_model": "claude-sonnet-4-6",
             "max_history_turns": 20,
             "image_window_minutes": 30,
             "strict_kb_mode": False,
@@ -218,7 +218,7 @@ def get_ai_reply(user_id: str, user_message: str) -> str:
         history = history[-max_turns:]
         conversation_history[user_id] = history
 
-    model = APP_CONFIG.get("text_model", "claude-3-5-haiku-20241022")
+    model = APP_CONFIG.get("text_model", "claude-haiku-4-5-20251001")
     system = build_system_prompt(query=query)   # 傳入問題 → 語意搜尋最相關段落
 
     # 優先嘗試 Tool Use
@@ -262,9 +262,9 @@ def analyze_image(user_id: str, image_bytes: bytes, media_type: str, query: str)
     image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
 
     response = claude.messages.create(
-        model=APP_CONFIG.get("image_model", "claude-3-5-sonnet-20241022"),
+        model=APP_CONFIG.get("image_model", "claude-sonnet-4-6"),
         max_tokens=1024,
-        system=build_system_prompt(query=query),   # 圖片問題也做語意搜尋
+        system=build_system_prompt(query=query),
         messages=[{
             "role": "user",
             "content": [
