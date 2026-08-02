@@ -15,7 +15,11 @@ import os
 import sys
 import requests
 
-FARM_API_URL = os.environ.get("FARM_API_URL", "").strip().rstrip("/")
+# 農場回報系統網址：預設指向正式站，讓小凡免設定即可連線。
+# （此為公開網址、非機密；要改指到別的環境時用環境變數覆蓋。）
+DEFAULT_FARM_API_URL = "https://farm-reports.onrender.com"
+FARM_API_URL = (os.environ.get("FARM_API_URL", "").strip()
+                or DEFAULT_FARM_API_URL).rstrip("/")
 FARM_API_TOKEN = os.environ.get("FARM_API_TOKEN", "").strip()
 TIMEOUT = 12
 
