@@ -13,10 +13,10 @@
   "scheduled_tasks": [
     {
       "id": "weekly_contract_reminder",
-      "name": "每週契作進度催收",
+      "name": "每週契作進度催收（已由營運雷達精準催繳取代）",
       "group_id": "C263633454f61a28dae6b47b64171797d",
       "message": "📋 各位夥伴好，麻煩今天下班前回報本週契作進度，謝謝配合！🌿",
-      "enabled": true,
+      "enabled": false,
       "cron": {
         "day_of_week": "fri",
         "hour": 15,

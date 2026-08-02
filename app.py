@@ -363,7 +363,15 @@ def callback():
                     and not is_triggered(msg.get("text", ""))):
                 ctx_key = src.get("groupId") or src.get("group_id", "unknown")
                 user_id = src.get("userId") or src.get("user_id", "unknown")
-                monitor.buffer_message(ctx_key, user_id, msg.get("text", ""))
+                text = msg.get("text", "")
+                # 投票進行中：先嘗試把這則訊息計為一票（不影響監控暫存）
+                try:
+                    import poll
+                    if poll.has_open_poll(ctx_key):
+                        poll.record_vote(ctx_key, user_id, text)
+                except Exception as e:
+                    log(f"poll vote capture error: {e}")
+                monitor.buffer_message(ctx_key, user_id, text)
 
     except Exception as e:
         log(f"Pre-parse error: {e}")
@@ -396,6 +404,27 @@ def handle_message(event: MessageEvent):
         return
 
     query = strip_keywords(user_text) or "請分析這張照片中植物的病蟲害狀況。"
+
+    # ── Priority 0：開會投票指令（純 bot 端，需群組情境）──
+    try:
+        import poll
+        q = query.strip()
+        if q.startswith("開投票") or q.startswith("發起投票"):
+            body = q.replace("發起投票", "", 1).replace("開投票", "", 1).strip()
+            topic, options = poll.parse_open_command(body)
+            if topic is None:
+                send_reply(event.reply_token, options)  # 錯誤訊息
+            else:
+                send_reply(event.reply_token, poll.open_poll(ctx_key, topic, options))
+            return
+        if q in ("結算", "投票結算", "公告結果", "結束投票"):
+            send_reply(event.reply_token, poll.close_poll(ctx_key))
+            return
+        if q in ("投票狀況", "投票狀態", "目前票數", "看投票"):
+            send_reply(event.reply_token, poll.status_text(ctx_key))
+            return
+    except Exception as e:
+        log(f"poll command error: {type(e).__name__}: {e}")
 
     try:
         # ── Priority 1：引用回覆照片 ──
@@ -470,7 +499,9 @@ def handle_join(event: JoinEvent):
         "你可以這樣呼叫我：\n"
         "• 說「小凡」+ 問題 → 我來回答\n"
         "• 傳照片後說「小凡幫我看看」→ 分析植物狀況\n"
-        "• 說「小凡記錄採收...」→ 紀錄農場資料\n\n"
+        "• 「小凡 這週誰還沒交週報」→ 查週報進度\n"
+        "• 「小凡 大溪這週採收多少」→ 查真實採收量\n"
+        "• 「小凡 開投票 開會時間 10點/14點/16點」→ 發起投票\n\n"
         "有任何農業問題歡迎隨時問我！🌱"
     )
     try:
@@ -570,6 +601,53 @@ def test_boss_notify():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/admin/test-radar", methods=["POST"])
+def test_radar():
+    """手動立即觸發營運雷達（週報進度私訊 + 晨報），測試整條資料鏈是否通。"""
+    from flask import session
+    if not session.get("admin_logged_in"):
+        return {"error": "unauthorized"}, 401
+    import radar
+    from data_store import list_tasks as _list_tasks
+    which = (request.json or {}).get("which", "digest")
+    try:
+        if which == "morning":
+            radar.daily_morning_report(notify_boss, _list_tasks)
+        elif which == "friday":
+            import scheduler_tasks
+            gid = scheduler_tasks._primary_group_id(lambda: APP_CONFIG)
+            if not gid:
+                return {"success": False, "error": "找不到群組 ID"}, 400
+            radar.friday_group_remind(push_message, gid)
+        else:
+            radar.weekly_boss_digest(notify_boss)
+        return {"success": True, "triggered": which}
+    except Exception as e:
+        log(f"test-radar ERROR: {e}")
+        return {"success": False, "error": str(e)}, 500
+
+
+@app.route("/internal/radar-preview", methods=["GET"])
+def radar_preview():
+    """
+    純文字預覽營運雷達內容（不發 LINE），方便快速確認資料是否接通。
+    需帶 ?token= 等於 FARM_API_TOKEN（沿用同一把密鑰）。
+    """
+    import os as _os
+    required = _os.environ.get("FARM_API_TOKEN", "").strip()
+    if required and request.args.get("token", "") != required:
+        return {"error": "unauthorized"}, 401
+    import farm_bridge
+    from data_store import list_tasks as _list_tasks
+    status = farm_bridge.get_report_status()
+    return jsonify({
+        "status_raw": status,
+        "boss_digest": farm_bridge.format_status_digest(status, for_boss=True),
+        "group_reminder": farm_bridge.format_reminder(status),
+        "pending_tasks": _list_tasks(status="pending"),
+    })
+
+
 @app.route("/debug/webhook", methods=["GET"])
 def debug_webhook():
     return jsonify({"count": len(debug_webhooks), "webhooks": debug_webhooks})
@@ -623,9 +701,18 @@ def _start_background_services():
         push_fn=notify_boss,   # ← 直接傳 notify_boss，內部自動找老闆 ID
     )
 
-    # 2. APScheduler 排程器
+    # 2. APScheduler 排程器（靜態任務）
     scheduler_tasks.setup_scheduler(
         push_fn=push_message,
+        get_config=lambda: APP_CONFIG,
+    )
+
+    # 3. 營運雷達（讀農場回報系統真實資料 → 主動推播）
+    from data_store import list_tasks as _list_tasks
+    scheduler_tasks.setup_radar(
+        notify_boss_fn=notify_boss,
+        push_fn=push_message,
+        list_tasks_fn=_list_tasks,
         get_config=lambda: APP_CONFIG,
     )
 

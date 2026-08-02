@@ -12,7 +12,8 @@ Function Calling (Tool Use) — 工具定義與執行
 import json
 import os
 import sys
-from data_store import record_harvest, add_task, query_harvests, list_tasks
+from data_store import record_harvest, add_task, list_tasks
+import farm_bridge
 
 def log(msg: str):
     print(f"[TOOLS] {msg}", flush=True, file=sys.stderr)
@@ -74,19 +75,37 @@ TOOLS = [
     {
         "name": "query_harvests",
         "description": (
-            "查詢採收記錄。"
-            "當使用者問採收了多少、查詢記錄、統計產量、看一下紀錄時使用。"
+            "查詢農場「真實」採收量（直接讀取農場回報系統的週報資料）。"
+            "當使用者問某農場採收了多少、最近產量、這週收成、統計採收時使用。"
+            "例如「大溪這週採收多少」「最近四週各農場採收量」。"
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "location": {
+                "farm": {
                     "type": "string",
-                    "description": "要查詢的農場地點（可選，不填則查全部）",
+                    "description": "農場名稱片段（可選，不填則查全部農場），例：大溪、頭城",
                 },
-                "crop": {
+                "weeks": {
+                    "type": "integer",
+                    "description": "要查詢最近幾週（可選，預設 4，最多 12）",
+                },
+            },
+        },
+    },
+    {
+        "name": "check_report_status",
+        "description": (
+            "查詢本週各農場的週報繳交狀態：誰交了、誰還沒交、有無採收異常。"
+            "當老闆問「這週誰還沒交週報」「週報進度」「哪些農場沒回報」"
+            "「本週回報狀況」時使用。這是直接讀農場回報系統的即時資料。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "week_start": {
                     "type": "string",
-                    "description": "要查詢的作物名稱（可選，不填則查全部）",
+                    "description": "指定週的起始日 YYYY-MM-DD（可選，不填＝本週）",
                 },
             },
         },
@@ -211,14 +230,38 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
             }, ensure_ascii=False)
 
         elif tool_name == "query_harvests":
-            records = query_harvests(
-                location=tool_input.get("location"),
-                crop=tool_input.get("crop"),
+            weeks = int(tool_input.get("weeks") or 4)
+            data = farm_bridge.query_real_harvest(
+                farm=tool_input.get("farm", ""),
+                weeks=weeks,
             )
+            if not data.get("ok"):
+                return json.dumps({
+                    "success": False,
+                    "error": data.get("error", "無法連線農場回報系統"),
+                }, ensure_ascii=False)
             return json.dumps({
                 "success": True,
-                "count": len(records),
-                "records": records,
+                "summary": farm_bridge.format_harvest(data),
+                "data": data.get("farms", []),
+            }, ensure_ascii=False)
+
+        elif tool_name == "check_report_status":
+            data = farm_bridge.get_report_status(
+                week_start=tool_input.get("week_start", ""),
+            )
+            if not data.get("ok"):
+                return json.dumps({
+                    "success": False,
+                    "error": data.get("error", "無法連線農場回報系統"),
+                }, ensure_ascii=False)
+            return json.dumps({
+                "success": True,
+                "summary": farm_bridge.format_status_digest(data, for_boss=True),
+                "submitted_count": data.get("submitted_count"),
+                "missing_count": data.get("missing_count"),
+                "missing": [m["farm"] for m in data.get("missing", [])],
+                "anomalies": data.get("anomalies", []),
             }, ensure_ascii=False)
 
         elif tool_name == "list_tasks":
