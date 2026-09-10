@@ -101,39 +101,67 @@ def daily_morning_report(notify_boss_fn, list_tasks_fn):
 # ── 週五：ESG 文件提醒（私訊老闆）─────────────────────────────────────────────
 
 def friday_esg_reminder(notify_boss_fn):
-    """週五早上提醒老闆哪些 ESG 文件還沒簽。"""
-    try:
-        from data_store import get_esg_status
-        data = get_esg_status()
-    except Exception as e:
-        log(f"friday_esg_reminder 無法讀取 ESG 資料：{e}")
+    """週五早上提醒老闆哪些農場的合規文件還沒收齊。"""
+    data = farm_bridge.get_esg_docs()
+    if not data.get("ok"):
+        log(f"friday_esg_reminder 取不到資料，略過：{data.get('error')}")
         return
 
-    missing = []
-    for org, status in data.items():
-        items = []
-        if not status.get("contract"):
-            items.append("合作契約書")
-        if not status.get("image_rights"):
-            items.append("肖像同意書")
-        if items:
-            missing.append(f"  ・{org}：{'、'.join(items)}")
-
+    missing = [f["farm"] for f in data.get("farms", []) if not f.get("doc_count")]
     if not missing:
-        log("friday_esg_reminder: 所有 ESG 文件均已完成，略過推播")
+        log("friday_esg_reminder: 每個農場都有文件，略過推播")
         return
 
     text = (
-        f"📄 小凡 ESG 文件提醒　{_today_str()}\n\n"
-        f"以下文件尚未簽署完成：\n"
-        + "\n".join(missing)
-        + "\n\n如有需要可告知小凡更新狀態 🌿"
+        f"📄 小凡合規文件提醒　{_today_str()}\n\n"
+        f"以下農場還沒有任何文件：\n"
+        + "\n".join(f"　・{name}" for name in missing)
+        + f"\n\n目前共收到 {data.get('total_documents', 0)} 份文件 🌿"
     )
     try:
         notify_boss_fn(text)
-        log(f"friday_esg_reminder 已推播（{len(missing)} 個組織待簽）")
+        log(f"friday_esg_reminder 已推播（{len(missing)} 個農場待補）")
     except Exception as e:
         log(f"friday_esg_reminder 失敗：{e}")
+
+
+# ── 每週一：會議與決議追蹤 ────────────────────────────────────────────────────
+
+def weekly_meeting_digest(notify_boss_fn):
+    """週一提醒老闆本週會議，以及逾期未完成的決議待辦。"""
+    data = farm_bridge.get_meetings(days_ahead=7, days_back=0)
+    if not data.get("ok"):
+        log(f"weekly_meeting_digest 取不到資料，略過：{data.get('error')}")
+        return
+
+    meetings = [m for m in data.get("meetings", []) if m.get("status") == "scheduled"]
+    pending = data.get("pending_actions", [])
+    if not meetings and not pending:
+        log("weekly_meeting_digest: 本週無會議也無待辦，略過推播")
+        return
+
+    parts = [f"📅 本週會議與決議追蹤　{_today_str()}"]
+    if meetings:
+        parts.append(f"\n本週有 {len(meetings)} 場會議：")
+        for m in meetings:
+            when = (m.get("meet_at") or "").replace("T", " ")[:16]
+            where = f"　{m['location']}" if m.get("location") else ""
+            parts.append(f"　・{when}　{m['title']}{where}")
+    else:
+        parts.append("\n本週沒有排定會議")
+
+    if pending:
+        parts.append(f"\n📌 待追蹤決議（{len(pending)} 項）：")
+        for a in pending[:8]:
+            due = f"（{a['due_date']} 前）" if a.get("due_date") else ""
+            who = f"{a['owner']}：" if a.get("owner") else ""
+            parts.append(f"　・{who}{a['description']}{due}")
+
+    try:
+        notify_boss_fn("\n".join(parts))
+        log(f"weekly_meeting_digest 已推播（{len(meetings)} 會議 / {len(pending)} 待辦）")
+    except Exception as e:
+        log(f"weekly_meeting_digest 失敗：{e}")
 
 
 # ── 週五：多群組週報催繳 ──────────────────────────────────────────────────────

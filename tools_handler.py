@@ -12,7 +12,7 @@ Function Calling (Tool Use) — 工具定義與執行
 import json
 import os
 import sys
-from data_store import record_harvest, add_task, list_tasks, get_esg_status, update_esg_status
+from data_store import record_harvest, add_task, list_tasks
 import farm_bridge
 
 def log(msg: str):
@@ -128,39 +128,143 @@ TOOLS = [
         },
     },
     {
-        "name": "track_esg_document",
+        "name": "query_impact_data",
         "description": (
-            "追蹤各協力農場的 ESG 文件（合作契約書、肖像同意書）簽署狀態。"
-            "可查詢哪些組織還沒簽文件、更新某組織的文件狀態。"
-            "當使用者問「哪些農場還沒簽約」「ESG 文件進度」「更新芥菜種會的契約狀態」時使用。"
+            "查詢 ESG 影響力數據（Impact Data）：弱勢就業工時、轉銜一般職場人數、"
+            "獨立完成任務數、企業來訪人次、採收量、堆肥量、物種觀察數等。"
+            "當使用者問「這季的影響力數據」「就業工時多少」「ESG 指標」"
+            "「服務了多少人次」「要給企業的數據」時使用。"
+            "資料直接讀農場回報系統的週報，是真實數字。"
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["query", "update"],
-                    "description": "query=查詢狀態，update=更新狀態",
+                "weeks": {
+                    "type": "integer",
+                    "description": "要統計最近幾週（可選，預設 4，最多 52）",
                 },
-                "organization": {
+                "farm": {
                     "type": "string",
-                    "description": "組織名稱（update 時必填），例如：苗栗自閉症協進會、芥菜種會、臺東康復之友協會、靜鴻家園、亞葵小鎮",
-                },
-                "doc_type": {
-                    "type": "string",
-                    "enum": ["contract", "image_rights", "both"],
-                    "description": "文件類型：contract=合作契約書，image_rights=肖像同意書，both=兩者都更新",
-                },
-                "signed": {
-                    "type": "boolean",
-                    "description": "是否已簽署（update 時使用）",
-                },
-                "note": {
-                    "type": "string",
-                    "description": "備註（例如：預計下週寄回、已郵寄中）",
+                    "description": "農場名稱片段（可選，不填＝全部農場）",
                 },
             },
-            "required": ["action"],
+        },
+    },
+    {
+        "name": "check_esg_documents",
+        "description": (
+            "查詢各農場的合規文件收集狀態：誰已經交了文件、誰完全沒有。"
+            "當使用者問「哪些農場還沒交文件」「ESG 文件進度」「合規文件收齊了嗎」時使用。"
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "check_shipments",
+        "description": (
+            "查詢出貨單與物流狀態：待出貨、已出貨、缺貨運單號的單子。"
+            "當使用者問「還有哪些沒出貨」「出貨進度」「最近出了幾單」"
+            "「哪些單子沒填單號」時使用。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "shipped"],
+                    "description": "篩選狀態（可選）：pending=待出貨，shipped=已出貨",
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "查最近幾天（可選，預設 30，最多 365）",
+                },
+            },
+        },
+    },
+    {
+        "name": "list_meetings",
+        "description": (
+            "查詢會議安排與待追蹤的決議事項。"
+            "當使用者問「最近有什麼會」「下次開會什麼時候」「會議決議追蹤」"
+            "「上次開會決定什麼」時使用。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days_ahead": {
+                    "type": "integer",
+                    "description": "往後查幾天（可選，預設 30）",
+                },
+                "days_back": {
+                    "type": "integer",
+                    "description": "往前查幾天（可選，預設 14）",
+                },
+            },
+        },
+    },
+    {
+        "name": "schedule_meeting",
+        "description": (
+            "建立／排定一場會議。"
+            "當使用者說「安排一場會議」「下週三下午兩點開月會」"
+            "「跟苗栗約線上會議」時使用。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "會議名稱"},
+                "meet_at": {
+                    "type": "string",
+                    "description": "會議時間，ISO 格式 YYYY-MM-DDTHH:MM，例 2026-09-20T14:00",
+                },
+                "location": {"type": "string", "description": "地點或線上會議連結（可選）"},
+                "scope": {"type": "string", "description": "與會組織，逗號分隔（可選）"},
+                "agenda": {"type": "string", "description": "議程（可選）"},
+            },
+            "required": ["title", "meet_at"],
+        },
+    },
+    {
+        "name": "record_meeting_minutes",
+        "description": (
+            "記錄某場會議的會議紀錄與決議待辦事項，並把會議標記為已完成。"
+            "當使用者說「記錄今天的會議紀錄」「這次會議決議是…」時使用。"
+            "要先用 list_meetings 找到會議 id。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "meeting_id": {"type": "integer", "description": "會議 id"},
+                "minutes": {"type": "string", "description": "會議紀錄與決議內容"},
+                "actions": {
+                    "type": "array",
+                    "description": "決議產生的待辦事項清單（可選）",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "description": {"type": "string", "description": "待辦內容"},
+                            "owner": {"type": "string", "description": "負責人或單位"},
+                            "due_date": {"type": "string", "description": "期限 YYYY-MM-DD"},
+                        },
+                        "required": ["description"],
+                    },
+                },
+            },
+            "required": ["meeting_id", "minutes"],
+        },
+    },
+    {
+        "name": "complete_meeting_action",
+        "description": (
+            "把某項會議決議待辦標記為已完成。"
+            "當使用者說「第 3 項決議做完了」「把那個待辦結掉」時使用。"
+            "要先用 list_meetings 取得待辦的 action_id。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action_id": {"type": "integer", "description": "待辦事項 id"},
+            },
+            "required": ["action_id"],
         },
     },
     {
@@ -308,29 +412,114 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
                 "tasks": tasks,
             }, ensure_ascii=False)
 
-        elif tool_name == "track_esg_document":
-            action = tool_input.get("action", "query")
-            if action == "query":
-                data = get_esg_status()
-                lines = ["📄 ESG 文件追蹤狀態："]
-                for org, status in data.items():
-                    contract = "✅" if status.get("contract") else "❌"
-                    image = "✅" if status.get("image_rights") else "❌"
-                    note = f"（{status['note']}）" if status.get("note") else ""
-                    lines.append(f"  {org}：契約 {contract} 肖像 {image}{note}")
-                missing = [org for org, s in data.items() if not s.get("contract") or not s.get("image_rights")]
-                if missing:
-                    lines.append(f"\n⚠️ 尚未完成：{'、'.join(missing)}")
-                return json.dumps({"success": True, "message": "\n".join(lines), "data": data}, ensure_ascii=False)
-            else:
-                org = tool_input.get("organization", "")
-                doc_type = tool_input.get("doc_type", "both")
-                signed = tool_input.get("signed", True)
-                note = tool_input.get("note", "")
-                if not org:
-                    return json.dumps({"success": False, "error": "請指定組織名稱"}, ensure_ascii=False)
-                result = update_esg_status(org, doc_type, signed, note)
-                return json.dumps({"success": True, "message": f"已更新 {org} 的 ESG 文件狀態", "data": result}, ensure_ascii=False)
+        elif tool_name == "query_impact_data":
+            data = farm_bridge.get_impact(
+                weeks=int(tool_input.get("weeks") or 4),
+                farm=tool_input.get("farm", ""),
+            )
+            if not data.get("ok"):
+                return json.dumps({"success": False,
+                                   "error": data.get("error", "無法連線農場回報系統")},
+                                  ensure_ascii=False)
+            return json.dumps({
+                "success": True,
+                "summary": farm_bridge.format_impact(data),
+                "totals": data.get("totals", {}),
+                "report_count": data.get("report_count", 0),
+            }, ensure_ascii=False)
+
+        elif tool_name == "check_esg_documents":
+            data = farm_bridge.get_esg_docs()
+            if not data.get("ok"):
+                return json.dumps({"success": False,
+                                   "error": data.get("error", "無法連線農場回報系統")},
+                                  ensure_ascii=False)
+            return json.dumps({
+                "success": True,
+                "summary": farm_bridge.format_esg_docs(data),
+                "total_documents": data.get("total_documents", 0),
+            }, ensure_ascii=False)
+
+        elif tool_name == "check_shipments":
+            data = farm_bridge.get_shipments(
+                status=tool_input.get("status", ""),
+                days=int(tool_input.get("days") or 30),
+            )
+            if not data.get("ok"):
+                return json.dumps({"success": False,
+                                   "error": data.get("error", "無法連線農場回報系統")},
+                                  ensure_ascii=False)
+            return json.dumps({
+                "success": True,
+                "summary": farm_bridge.format_shipments(data),
+                "pending_count": data.get("pending_count", 0),
+                "missing_tracking_count": data.get("missing_tracking_count", 0),
+            }, ensure_ascii=False)
+
+        elif tool_name == "list_meetings":
+            data = farm_bridge.get_meetings(
+                days_ahead=int(tool_input.get("days_ahead") or 30),
+                days_back=int(tool_input.get("days_back") or 14),
+            )
+            if not data.get("ok"):
+                return json.dumps({"success": False,
+                                   "error": data.get("error", "無法連線農場回報系統")},
+                                  ensure_ascii=False)
+            return json.dumps({
+                "success": True,
+                "summary": farm_bridge.format_meetings(data),
+                "meetings": data.get("meetings", []),
+                "pending_actions": data.get("pending_actions", []),
+            }, ensure_ascii=False)
+
+        elif tool_name == "schedule_meeting":
+            data = farm_bridge.create_meeting(
+                title=tool_input["title"],
+                meet_at=tool_input["meet_at"],
+                location=tool_input.get("location", ""),
+                scope=tool_input.get("scope", ""),
+                agenda=tool_input.get("agenda", ""),
+            )
+            if not data.get("ok") or data.get("error"):
+                return json.dumps({"success": False,
+                                   "error": data.get("error", "建立會議失敗")},
+                                  ensure_ascii=False)
+            m = data.get("meeting", {})
+            when = (m.get("meet_at") or "").replace("T", " ")[:16]
+            return json.dumps({
+                "success": True,
+                "message": f"已排定會議「{m.get('title')}」{when}",
+                "meeting_id": m.get("id"),
+            }, ensure_ascii=False)
+
+        elif tool_name == "record_meeting_minutes":
+            data = farm_bridge.record_minutes(
+                meeting_id=int(tool_input["meeting_id"]),
+                minutes=tool_input["minutes"],
+                actions=tool_input.get("actions") or [],
+            )
+            if not data.get("ok") or data.get("error"):
+                return json.dumps({"success": False,
+                                   "error": data.get("error", "記錄會議紀錄失敗")},
+                                  ensure_ascii=False)
+            m = data.get("meeting", {})
+            return json.dumps({
+                "success": True,
+                "message": f"已記錄「{m.get('title')}」的會議紀錄，"
+                           f"共 {len(m.get('actions', []))} 項決議待辦",
+                "actions": m.get("actions", []),
+            }, ensure_ascii=False)
+
+        elif tool_name == "complete_meeting_action":
+            data = farm_bridge.complete_action(int(tool_input["action_id"]))
+            if not data.get("ok") or data.get("error"):
+                return json.dumps({"success": False,
+                                   "error": data.get("error", "更新待辦失敗")},
+                                  ensure_ascii=False)
+            return json.dumps({
+                "success": True,
+                "message": f"已完成：{data.get('description', '')}",
+            }, ensure_ascii=False)
 
         elif tool_name == "notify_boss":
             return _tool_notify_boss(tool_input["message"])

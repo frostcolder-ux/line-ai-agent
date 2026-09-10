@@ -28,6 +28,9 @@ def log(msg: str):
     print(f"[FARM_BRIDGE] {msg}", file=sys.stderr, flush=True)
 
 
+_AUTH_HINT = "API 認證失敗：請在 Render 設定 FARM_API_TOKEN，值需等於農場系統的 INTERNAL_API_TOKEN"
+
+
 def _get(path: str, params: dict) -> dict:
     if not FARM_API_URL:
         return {"ok": False, "error": "FARM_API_URL 未設定"}
@@ -37,13 +40,32 @@ def _get(path: str, params: dict) -> dict:
     try:
         resp = requests.get(f"{FARM_API_URL}{path}", params=p, timeout=TIMEOUT)
         if resp.status_code == 401:
-            return {"ok": False, "error": "API 認證失敗（token 不符）"}
+            return {"ok": False, "error": _AUTH_HINT}
         resp.raise_for_status()
         data = resp.json()
         data["ok"] = True
         return data
     except Exception as e:
         log(f"GET {path} 失敗：{type(e).__name__}: {e}")
+        return {"ok": False, "error": f"連線失敗：{type(e).__name__}"}
+
+
+def _post(path: str, payload: dict) -> dict:
+    """寫入端點。農場系統對寫入一律要求 token，沒設就會 401。"""
+    if not FARM_API_URL:
+        return {"ok": False, "error": "FARM_API_URL 未設定"}
+    params = {"token": FARM_API_TOKEN} if FARM_API_TOKEN else {}
+    try:
+        resp = requests.post(f"{FARM_API_URL}{path}", params=params,
+                             json=payload or {}, timeout=TIMEOUT)
+        if resp.status_code == 401:
+            return {"ok": False, "error": _AUTH_HINT}
+        resp.raise_for_status()
+        data = resp.json()
+        data.setdefault("ok", True)
+        return data
+    except Exception as e:
+        log(f"POST {path} 失敗：{type(e).__name__}: {e}")
         return {"ok": False, "error": f"連線失敗：{type(e).__name__}"}
 
 
@@ -134,4 +156,165 @@ def format_harvest(data: dict) -> str:
         for w in f.get("weekly", []):
             if w["harvest_kg"] > 0:
                 lines.append(f"  {w['week_start']}　{w['harvest_kg']} kg")
+    return "\n".join(lines)
+
+
+# ── 影響力數據 / 合規文件 / 出貨 / 會議 ─────────────────────────────────────────
+
+def get_impact(weeks: int = 4, farm: str = "") -> dict:
+    """近 N 週 ESG 影響力彙總。"""
+    return _get("/internal/impact", {"weeks": weeks, "farm": farm})
+
+
+def get_esg_docs() -> dict:
+    """各農場合規文件收集狀態。"""
+    return _get("/internal/esg-docs", {})
+
+
+def get_shipments(status: str = "", days: int = 30) -> dict:
+    """近 N 天出貨單與物流狀態。"""
+    return _get("/internal/shipments", {"status": status, "days": days})
+
+
+def get_meetings(status: str = "", days_ahead: int = 30, days_back: int = 14) -> dict:
+    """會議列表與未完成決議待辦。"""
+    return _get("/internal/meetings", {"status": status,
+                                       "days_ahead": days_ahead,
+                                       "days_back": days_back})
+
+
+def create_meeting(title: str, meet_at: str, location: str = "",
+                   scope: str = "", agenda: str = "") -> dict:
+    """建立會議。meet_at 需為 ISO 格式，例 2026-09-20T14:00。"""
+    return _post("/internal/meetings", {
+        "title": title, "meet_at": meet_at, "location": location,
+        "scope": scope, "agenda": agenda,
+    })
+
+
+def record_minutes(meeting_id: int, minutes: str, actions: list | None = None) -> dict:
+    """記錄會議紀錄與決議待辦。"""
+    return _post(f"/internal/meetings/{meeting_id}/minutes", {
+        "minutes": minutes, "actions": actions or [],
+    })
+
+
+def complete_action(action_id: int) -> dict:
+    """把某項會議決議待辦標記為完成。"""
+    return _post(f"/internal/meeting-actions/{action_id}/done", {})
+
+
+# ── 排版 ──────────────────────────────────────────────────────────────────────
+
+def format_impact(data: dict) -> str:
+    if not data.get("ok"):
+        return f"⚠️ 無法取得影響力數據：{data.get('error', '未知錯誤')}"
+
+    t = data.get("totals", {})
+    weeks = data.get("weeks", 0)
+    lines = [f"📊 影響力數據（近 {weeks} 週・{data.get('query_farm', '')}）",
+             f"期間：{data.get('period_start', '')} ~ {data.get('period_end', '')}",
+             f"週報筆數：{data.get('report_count', 0)}"]
+
+    if not data.get("report_count"):
+        lines.append("\n（這段期間還沒有週報資料）")
+        return "\n".join(lines)
+
+    lines.append("\n【社會面】")
+    lines.append(f"・弱勢就業工時：{t.get('employment_hours', 0)} 小時")
+    lines.append(f"・總工作時數：{t.get('worked_hours', 0)} 小時")
+    lines.append(f"・最高同時工作人數：{t.get('peak_workers', 0)} 人")
+    lines.append(f"・轉銜一般職場：{t.get('open_employment', 0)} 人")
+    lines.append(f"・獨立完成任務：{t.get('independent_tasks', 0)} 次")
+    if t.get("mood_avg") is not None:
+        lines.append(f"・平均心情星級：{t['mood_avg']} / 5")
+    if t.get("visitor_count"):
+        lines.append(f"・企業來訪：{t.get('corporate_visits', 0)} 場、"
+                     f"{t['visitor_count']} 人次、"
+                     f"{t.get('visit_activity_hours', 0)} 小時")
+    if t.get("safety_incidents"):
+        lines.append(f"⚠️ 安全事件：{t['safety_incidents']} 件")
+
+    lines.append("\n【環境面】")
+    lines.append(f"・採收量：{t.get('harvest_kg', 0)} 公斤")
+    lines.append(f"・堆肥化：{t.get('compost_kg', 0)} 公斤")
+    lines.append(f"・新觀察物種：{t.get('new_species_count', 0)} 種")
+    lines.append(f"・無農藥週數：{t.get('pesticide_free_weeks', 0)} 週")
+    return "\n".join(lines)
+
+
+def format_esg_docs(data: dict) -> str:
+    if not data.get("ok"):
+        return f"⚠️ 無法取得文件狀態：{data.get('error', '未知錯誤')}"
+
+    farms = data.get("farms", [])
+    lines = [f"📄 合規文件收集狀態（共 {data.get('total_documents', 0)} 份）"]
+    missing = [f for f in farms if f.get("doc_count", 0) == 0]
+
+    for f in farms:
+        n = f.get("doc_count", 0)
+        mark = "✅" if n else "❌"
+        types = "、".join(f.get("doc_types", []))
+        lines.append(f"{mark} {f['farm']}：{n} 份" + (f"（{types}）" if types else ""))
+
+    if missing:
+        lines.append(f"\n⚠️ 完全沒有文件：{'、'.join(m['farm'] for m in missing)}")
+    if data.get("shared_documents"):
+        lines.append(f"\n📎 全體適用文件：{len(data['shared_documents'])} 份")
+    return "\n".join(lines)
+
+
+def format_shipments(data: dict) -> str:
+    if not data.get("ok"):
+        return f"⚠️ 無法取得出貨資料：{data.get('error', '未知錯誤')}"
+
+    rows = data.get("shipments", [])
+    if not rows:
+        return f"近 {data.get('days', 0)} 天沒有出貨紀錄。"
+
+    lines = [f"🚚 出貨狀態（近 {data.get('days', 0)} 天，共 {data.get('count', 0)} 單）",
+             f"待出貨 {data.get('pending_count', 0)} 單"]
+    if data.get("missing_tracking_count"):
+        lines.append(f"⚠️ 已出貨但缺貨運單號：{data['missing_tracking_count']} 單")
+
+    for s in rows[:12]:
+        items = "、".join(f"{i['name']}×{i['quantity']:g}" for i in s.get("items", [])[:3])
+        tail = f" 單號 {s['tracking_no']}" if s.get("tracking_no") else ""
+        lines.append(f"\n【{s.get('shipment_no') or s['id']}】{s.get('status_label', '')}"
+                     f"　{s.get('ship_date', '')}")
+        if items:
+            lines.append(f"  {items}")
+        if s.get("logistics_provider") or tail:
+            lines.append(f"  {s.get('logistics_provider', '')}{tail}")
+    if len(rows) > 12:
+        lines.append(f"\n…另有 {len(rows) - 12} 單")
+    return "\n".join(lines)
+
+
+def format_meetings(data: dict) -> str:
+    if not data.get("ok"):
+        return f"⚠️ 無法取得會議資料：{data.get('error', '未知錯誤')}"
+
+    meetings = data.get("meetings", [])
+    pending = data.get("pending_actions", [])
+    if not meetings and not pending:
+        return "目前沒有排定的會議，也沒有待追蹤的決議事項。"
+
+    lines = [f"📅 會議（共 {data.get('count', 0)} 場，"
+             f"未來 {data.get('upcoming_count', 0)} 場）"]
+    for m in meetings[:10]:
+        when = (m.get("meet_at") or "").replace("T", " ")[:16]
+        lines.append(f"\n【{m['title']}】{when}")
+        if m.get("location"):
+            lines.append(f"  地點：{m['location']}")
+        if m.get("scope"):
+            lines.append(f"  與會：{m['scope']}")
+        lines.append(f"  狀態：{m.get('status', '')}")
+
+    if pending:
+        lines.append(f"\n📌 待追蹤決議（{len(pending)} 項）：")
+        for a in pending[:10]:
+            due = f"（{a['due_date']} 前）" if a.get("due_date") else ""
+            who = f"{a['owner']}：" if a.get("owner") else ""
+            lines.append(f"・[{a['action_id']}] {who}{a['description']}{due}")
     return "\n".join(lines)

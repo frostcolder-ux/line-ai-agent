@@ -74,22 +74,6 @@ def init_db():
             status      TEXT         NOT NULL DEFAULT 'pending',
             created_at  TEXT         NOT NULL
         );
-
-        CREATE TABLE IF NOT EXISTS esg_documents (
-            organization        TEXT        PRIMARY KEY,
-            contract_signed     BOOLEAN     NOT NULL DEFAULT false,
-            image_rights_signed BOOLEAN     NOT NULL DEFAULT false,
-            note                TEXT        NOT NULL DEFAULT '',
-            updated_at          TEXT        NOT NULL DEFAULT ''
-        );
-
-        INSERT INTO esg_documents (organization) VALUES
-            ('苗栗自閉症協進會'),
-            ('芥菜種會'),
-            ('臺東康復之友協會'),
-            ('靜鴻家園'),
-            ('亞葵小鎮')
-        ON CONFLICT (organization) DO NOTHING;
     """
     try:
         conn = get_conn()

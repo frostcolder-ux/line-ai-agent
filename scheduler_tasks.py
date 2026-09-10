@@ -155,15 +155,23 @@ def setup_radar(notify_boss_fn, push_fn, list_tasks_fn, get_config):
     else:
         log("Radar: 找不到群組 ID，跳過週五催繳（可在 config 加 partner_groups）")
 
-    # 週五 ESG 文件提醒（早上 9:00）
+    # 週五合規文件提醒（早上 9:00）
     _scheduler.add_job(
         lambda: radar.friday_esg_reminder(notify_boss_fn),
         CronTrigger(day_of_week="fri", hour=9, minute=0, timezone="Asia/Taipei"),
         id="radar_friday_esg", replace_existing=True,
-        name="週五 ESG 文件提醒",
+        name="週五合規文件提醒",
     )
 
-    log("Radar jobs registered ✓ (週一08:00 / 每日07:30 / 週五09:00+15:00)")
+    # 週一會議與決議追蹤（08:30，接在週報進度之後）
+    _scheduler.add_job(
+        lambda: radar.weekly_meeting_digest(notify_boss_fn),
+        CronTrigger(day_of_week="mon", hour=8, minute=30, timezone="Asia/Taipei"),
+        id="radar_weekly_meetings", replace_existing=True,
+        name="週一會議與決議追蹤",
+    )
+
+    log("Radar jobs registered ✓ (週一08:00+08:30 / 每日07:30 / 週五09:00+15:00)")
     return _scheduler
 
 
