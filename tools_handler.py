@@ -12,7 +12,7 @@ Function Calling (Tool Use) — 工具定義與執行
 import json
 import os
 import sys
-from data_store import record_harvest, add_task, list_tasks
+from data_store import record_harvest, add_task, list_tasks, get_esg_status, update_esg_status
 import farm_bridge
 
 def log(msg: str):
@@ -125,6 +125,42 @@ TOOLS = [
                     "enum": ["pending", "done"],
                 },
             },
+        },
+    },
+    {
+        "name": "track_esg_document",
+        "description": (
+            "追蹤各協力農場的 ESG 文件（合作契約書、肖像同意書）簽署狀態。"
+            "可查詢哪些組織還沒簽文件、更新某組織的文件狀態。"
+            "當使用者問「哪些農場還沒簽約」「ESG 文件進度」「更新芥菜種會的契約狀態」時使用。"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["query", "update"],
+                    "description": "query=查詢狀態，update=更新狀態",
+                },
+                "organization": {
+                    "type": "string",
+                    "description": "組織名稱（update 時必填），例如：苗栗自閉症協進會、芥菜種會、臺東康復之友協會、靜鴻家園、亞葵小鎮",
+                },
+                "doc_type": {
+                    "type": "string",
+                    "enum": ["contract", "image_rights", "both"],
+                    "description": "文件類型：contract=合作契約書，image_rights=肖像同意書，both=兩者都更新",
+                },
+                "signed": {
+                    "type": "boolean",
+                    "description": "是否已簽署（update 時使用）",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "備註（例如：預計下週寄回、已郵寄中）",
+                },
+            },
+            "required": ["action"],
         },
     },
     {
@@ -271,6 +307,30 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
                 "count": len(tasks),
                 "tasks": tasks,
             }, ensure_ascii=False)
+
+        elif tool_name == "track_esg_document":
+            action = tool_input.get("action", "query")
+            if action == "query":
+                data = get_esg_status()
+                lines = ["📄 ESG 文件追蹤狀態："]
+                for org, status in data.items():
+                    contract = "✅" if status.get("contract") else "❌"
+                    image = "✅" if status.get("image_rights") else "❌"
+                    note = f"（{status['note']}）" if status.get("note") else ""
+                    lines.append(f"  {org}：契約 {contract} 肖像 {image}{note}")
+                missing = [org for org, s in data.items() if not s.get("contract") or not s.get("image_rights")]
+                if missing:
+                    lines.append(f"\n⚠️ 尚未完成：{'、'.join(missing)}")
+                return json.dumps({"success": True, "message": "\n".join(lines), "data": data}, ensure_ascii=False)
+            else:
+                org = tool_input.get("organization", "")
+                doc_type = tool_input.get("doc_type", "both")
+                signed = tool_input.get("signed", True)
+                note = tool_input.get("note", "")
+                if not org:
+                    return json.dumps({"success": False, "error": "請指定組織名稱"}, ensure_ascii=False)
+                result = update_esg_status(org, doc_type, signed, note)
+                return json.dumps({"success": True, "message": f"已更新 {org} 的 ESG 文件狀態", "data": result}, ensure_ascii=False)
 
         elif tool_name == "notify_boss":
             return _tool_notify_boss(tool_input["message"])

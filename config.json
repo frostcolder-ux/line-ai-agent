@@ -10,6 +10,13 @@
   "monitor_interval_seconds": 300,
   "monitor_min_messages": 5,
 
+  "partner_groups": [
+    {
+      "group_id": "C263633454f61a28dae6b47b64171797d",
+      "name": "思凡共耕香草產業鏈"
+    }
+  ],
+
   "scheduled_tasks": [
     {
       "id": "weekly_contract_reminder",

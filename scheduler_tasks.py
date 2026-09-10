@@ -135,20 +135,35 @@ def setup_radar(notify_boss_fn, push_fn, list_tasks_fn, get_config):
         name="老闆每日晨報",
     )
 
-    # 週五群組精準催繳
-    group_id = _primary_group_id(get_config)
-    if group_id:
+    # 週五群組精準催繳（支援多群組）
+    cfg = get_config()
+    partner_groups = cfg.get("partner_groups", [])
+    if not partner_groups:
+        # 回退：用舊的 scheduled_tasks 找主要群組
+        gid = _primary_group_id(get_config)
+        if gid:
+            partner_groups = [{"group_id": gid, "name": "主要群組"}]
+
+    if partner_groups:
         _scheduler.add_job(
-            lambda: radar.friday_group_remind(push_fn, group_id),
+            lambda: radar.friday_multi_group_remind(push_fn, partner_groups),
             CronTrigger(day_of_week="fri", hour=15, minute=0, timezone="Asia/Taipei"),
             id="radar_friday_remind", replace_existing=True,
             name="週五群組精準催繳",
         )
-        log(f"Radar registered: friday remind → {group_id}")
+        log(f"Radar registered: friday remind → {len(partner_groups)} 群組")
     else:
-        log("Radar: 找不到群組 ID，跳過週五催繳（可在 config 加 scheduled_tasks）")
+        log("Radar: 找不到群組 ID，跳過週五催繳（可在 config 加 partner_groups）")
 
-    log("Radar jobs registered ✓ (週一08:00 / 每日07:30 / 週五15:00)")
+    # 週五 ESG 文件提醒（早上 9:00）
+    _scheduler.add_job(
+        lambda: radar.friday_esg_reminder(notify_boss_fn),
+        CronTrigger(day_of_week="fri", hour=9, minute=0, timezone="Asia/Taipei"),
+        id="radar_friday_esg", replace_existing=True,
+        name="週五 ESG 文件提醒",
+    )
+
+    log("Radar jobs registered ✓ (週一08:00 / 每日07:30 / 週五09:00+15:00)")
     return _scheduler
 
 

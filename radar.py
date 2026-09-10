@@ -3,10 +3,11 @@
 
 把「農場回報系統的真實資料」轉成主動推播，取代人工每週檢查與催繳。
 
-三個主動任務（由 scheduler 在固定時間呼叫）：
-  weekly_boss_digest   週一早上 → 私訊老闆：未交名單 + 採收異常
-  friday_group_remind  週五下午 → 群組精準催繳：只點名未交農場
-  daily_morning_report 每天早上 → 私訊老闆：待辦 + 本週進度一句話 + 異常
+主動任務（由 scheduler 在固定時間呼叫）：
+  weekly_boss_digest      週一早上 → 私訊老闆：未交名單 + 採收異常
+  friday_group_remind     週五下午 → 群組精準催繳：只點名未交農場
+  daily_morning_report    每天早上 → 私訊老闆：待辦 + 本週進度一句話 + 異常
+  friday_esg_reminder     週五早上 → 私訊老闆：ESG 文件未完成提醒
 
 所有函式都「自帶降級」：farm-reports 連不上時，改推通用提醒或跳過，
 絕不讓排程崩潰。
@@ -95,3 +96,62 @@ def daily_morning_report(notify_boss_fn, list_tasks_fn):
         log("daily_morning_report 已推播")
     except Exception as e:
         log(f"daily_morning_report 失敗：{e}")
+
+
+# ── 週五：ESG 文件提醒（私訊老闆）─────────────────────────────────────────────
+
+def friday_esg_reminder(notify_boss_fn):
+    """週五早上提醒老闆哪些 ESG 文件還沒簽。"""
+    try:
+        from data_store import get_esg_status
+        data = get_esg_status()
+    except Exception as e:
+        log(f"friday_esg_reminder 無法讀取 ESG 資料：{e}")
+        return
+
+    missing = []
+    for org, status in data.items():
+        items = []
+        if not status.get("contract"):
+            items.append("合作契約書")
+        if not status.get("image_rights"):
+            items.append("肖像同意書")
+        if items:
+            missing.append(f"  ・{org}：{'、'.join(items)}")
+
+    if not missing:
+        log("friday_esg_reminder: 所有 ESG 文件均已完成，略過推播")
+        return
+
+    text = (
+        f"📄 小凡 ESG 文件提醒　{_today_str()}\n\n"
+        f"以下文件尚未簽署完成：\n"
+        + "\n".join(missing)
+        + "\n\n如有需要可告知小凡更新狀態 🌿"
+    )
+    try:
+        notify_boss_fn(text)
+        log(f"friday_esg_reminder 已推播（{len(missing)} 個組織待簽）")
+    except Exception as e:
+        log(f"friday_esg_reminder 失敗：{e}")
+
+
+# ── 週五：多群組週報催繳 ──────────────────────────────────────────────────────
+
+def friday_multi_group_remind(push_fn, groups: list):
+    """
+    週五對多個群組發送週報催繳提醒。
+    groups: [{"group_id": "C...", "name": "群組名稱"}, ...]
+    """
+    data = farm_bridge.get_report_status()
+    base_text = farm_bridge.format_reminder(data)
+
+    for group in groups:
+        gid = group.get("group_id", "").strip()
+        if not gid:
+            continue
+        try:
+            push_fn(gid, base_text)
+            log(f"friday_multi_group_remind 已推播 → {group.get('name', gid)}")
+        except Exception as e:
+            log(f"friday_multi_group_remind 失敗 {gid}：{e}")
