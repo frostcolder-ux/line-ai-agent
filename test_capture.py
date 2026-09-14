@@ -57,46 +57,75 @@ class TestSave(unittest.TestCase):
         self.assertEqual(st["by_asker"][0], ("張姐", 2))
 
 
-class TestBuffer(unittest.TestCase):
-    """沒達門檻的訊息要囤著，不能丟。
+class TestQueue(unittest.TestCase):
+    """訊息要存進資料庫，不能留在記憶體。
 
-    交辦常常只有孤零零一句（「麻煩你下週給我報價單」），
-    在安靜的群組裡永遠湊不到 5 則——以前那句話會被永久丟棄。
+    這支跑在 Render 免費方案上，行程會休眠也會自己重啟。
+    2026-09-14 實測：webhook 進來的訊息在 5 分鐘內就因為行程被換掉而消失，
+    「囤在記憶體等湊滿 5 則」的設計永遠等不到那一刻。
     """
 
     def setUp(self):
-        monitor._buffer.clear()
+        self.tmp = tempfile.mkdtemp()
+        self._orig = (work_capture.JSON_PATH, work_capture.PENDING_JSON)
+        work_capture.JSON_PATH = os.path.join(self.tmp, "cap.json")
+        work_capture.PENDING_JSON = os.path.join(self.tmp, "pending.json")
 
-    def test_放回去之後訊息還在而且順序不變(self):
-        monitor.buffer_message("C1", "U1", "第一句")
-        monitor.buffer_message("C1", "U2", "第二句")
-        snapshot = monitor._drain_buffer()
-        self.assertEqual(monitor._buffer["C1"], [], "drain 之後該是空的")
+    def tearDown(self):
+        work_capture.JSON_PATH, work_capture.PENDING_JSON = self._orig
 
-        monitor._requeue("C1", snapshot["C1"])
-        texts = [m["text"] for m in monitor._buffer["C1"]]
-        self.assertEqual(texts, ["第一句", "第二句"])
+    def q(self, text, gid="C1", who="張姐"):
+        return work_capture.queue_message(gid, "蒲草專案", "U1", who, text,
+                                          "2026-09-14 15:00:00")
 
-    def test_放回去之後新訊息接在後面(self):
-        monitor.buffer_message("C1", "U1", "舊的")
-        old = monitor._drain_buffer()["C1"]
-        monitor.buffer_message("C1", "U2", "新的")
-        monitor._requeue("C1", old)
-        texts = [m["text"] for m in monitor._buffer["C1"]]
-        self.assertEqual(texts, ["舊的", "新的"], "時間順序不能亂")
+    def test_進來的訊息會留在佇列裡(self):
+        self.q("麻煩你下週三前給我報價單")
+        self.assertEqual(work_capture.pending_count(), 1)
 
-    def test_囤太多會砍掉最舊的(self):
-        msgs = [{"user_id": "U1", "text": f"第{i}句", "ts": time.time()}
-                for i in range(monitor._MAX_BUFFER + 50)]
-        monitor._requeue("C1", msgs)
-        self.assertEqual(len(monitor._buffer["C1"]), monitor._MAX_BUFFER)
-        self.assertEqual(monitor._buffer["C1"][-1]["text"],
-                         f"第{monitor._MAX_BUFFER + 49}句", "要留最新的")
+    def test_只有一則也照樣處理不會被丟掉(self):
+        """關鍵：以前少於 5 則會被直接丟棄，最典型的交辦剛好就是一則。"""
+        self.q("麻煩你下週三前給我報價單")
+        seen = {}
 
-    def test_貼圖之類的照樣會進暫存(self):
-        # 過濾是在 app.py 那層做的，這裡只管存
-        monitor.buffer_message("C1", "U1", "任何文字")
-        self.assertEqual(len(monitor._buffer["C1"]), 1)
+        def fake_analyze(gid, msgs):
+            seen["n"] = len(msgs)
+            return {"alert": False, "requests": [
+                {"title": "給報價單", "raw": msgs[0]["text"], "asker": "張姐",
+                 "said_at": "2026-09-14 15:00", "kind": "quote"}]}
+
+        out = work_capture.process_pending(fake_analyze)
+        self.assertEqual(seen["n"], 1)
+        self.assertEqual(out["captured"], 1)
+        self.assertEqual(work_capture.pending_count(), 0, "處理完要標記")
+
+    def test_分析失敗時訊息留在佇列下次再試(self):
+        self.q("某句話")
+
+        def boom(gid, msgs):
+            raise RuntimeError("API 掛了")
+
+        out = work_capture.process_pending(boom)
+        self.assertEqual(out["captured"], 0)
+        self.assertEqual(work_capture.pending_count(), 1,
+                         "失敗不能標成已處理，否則訊息就永遠消失了")
+
+    def test_多個群組分開分析(self):
+        self.q("A 群的話", gid="C1")
+        self.q("B 群的話", gid="C2")
+        calls = []
+
+        def fake(gid, msgs):
+            calls.append(gid)
+            return {"requests": []}
+
+        out = work_capture.process_pending(fake)
+        self.assertEqual(sorted(calls), ["C1", "C2"])
+        self.assertEqual(out["groups"], 2)
+
+    def test_佇列寫入失敗不會拋例外(self):
+        """webhook 路徑上的呼叫，壞了也只能吞掉——不能害 LINE 收不到 200。"""
+        work_capture.PENDING_JSON = os.path.join(self.tmp, "no", "such", "x.json")
+        self.assertFalse(self.q("寫不進去的話"))
 
 
 class TestAnalyzePrompt(unittest.TestCase):

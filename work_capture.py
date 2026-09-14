@@ -160,6 +160,152 @@ def list_recent(days: int = 14, limit: int = 500) -> list:
             if r.get("created_at", "") >= since][:limit]
 
 
+# ── 收件佇列：訊息一進來就寫資料庫，不留在記憶體 ──────────────────────────
+#
+# 原本的做法是 monitor 把訊息囤在記憶體，每 5 分鐘分析一次。
+# 那在長駐的機器上沒問題，但這支跑在 Render 免費方案——會休眠、會重啟，
+# 2026-09-14 實測行程在 5 分鐘內就被換掉一次，囤著的訊息全部蒸發。
+# 所以改成：收到就進 pending_messages，分析時再從資料庫撈。
+# 行程死幾次都沒關係，訊息還在。
+
+def queue_message(group_id: str, group_name: str, user_id: str, who: str,
+                  text: str, said_at: str) -> bool:
+    """把一則群組訊息排進待分析佇列。webhook 路徑上呼叫，要快也要不會炸。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    row = (group_id, group_name, user_id, who, (text or "")[:2000],
+           said_at or now, now)
+    try:
+        if _use_pg():
+            from db import get_conn
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO pending_messages"
+                "(group_id,group_name,user_id,who,text,said_at,created_at)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s)", row)
+            conn.commit()
+            cur.close()
+            conn.close()
+            return True
+        rows = _load_pending()
+        rows.append(dict(zip(
+            ("group_id", "group_name", "user_id", "who", "text", "said_at",
+             "created_at"), row), id=len(rows) + 1, processed=0))
+        _save_pending(rows)
+        return True
+    except Exception as e:                 # 佇列失敗絕不能讓 webhook 掛掉
+        log(f"queue_message 失敗：{type(e).__name__}: {e}")
+        return False
+
+
+PENDING_JSON = os.path.join(BASE_DIR, "pending_messages.json")
+
+
+def _load_pending() -> list:
+    try:
+        with open(PENDING_JSON, encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _save_pending(rows: list):
+    with open(PENDING_JSON, "w", encoding="utf-8") as f:
+        json.dump(rows, f, ensure_ascii=False, indent=2)
+
+
+def take_pending(limit: int = 200) -> dict:
+    """取出還沒分析的訊息，依群組分組。回傳 {group_id: (group_name, [rows])}。"""
+    if _use_pg():
+        from db import get_conn
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, group_id, group_name, user_id, who, text, said_at"
+            " FROM pending_messages WHERE processed = 0"
+            " ORDER BY id ASC LIMIT %s", (limit,))
+        names = ("id", "group_id", "group_name", "user_id", "who", "text",
+                 "said_at")
+        rows = [dict(zip(names, r)) for r in cur.fetchall()]
+        cur.close()
+        conn.close()
+    else:
+        rows = [r for r in _load_pending() if not r.get("processed")][:limit]
+
+    out: dict = {}
+    for r in rows:
+        gid = r.get("group_id", "")
+        out.setdefault(gid, (r.get("group_name") or gid, []))[1].append(r)
+    return out
+
+
+def mark_processed(ids: list) -> None:
+    if not ids:
+        return
+    if _use_pg():
+        from db import get_conn
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("UPDATE pending_messages SET processed = 1"
+                    " WHERE id = ANY(%s)", (list(ids),))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return
+    rows = _load_pending()
+    idset = set(ids)
+    for r in rows:
+        if r.get("id") in idset:
+            r["processed"] = 1
+    _save_pending(rows)
+
+
+def pending_count() -> int:
+    if _use_pg():
+        from db import get_conn
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM pending_messages WHERE processed = 0")
+        n = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        return int(n)
+    return len([r for r in _load_pending() if not r.get("processed")])
+
+
+def process_pending(analyze_fn, group_name_fn=None, limit: int = 200) -> dict:
+    """把佇列裡的訊息分析成交辦。
+
+    analyze_fn(group_id, messages) -> dict（monitor._analyze 的簽章）。
+    分析失敗的那一組**不標記已處理**，下次會再試——寧可重跑也不要靜靜丟掉。
+    """
+    batches = take_pending(limit)
+    if not batches:
+        return {"groups": 0, "messages": 0, "captured": 0}
+
+    captured = n_msgs = 0
+    for gid, (gname, rows) in batches.items():
+        msgs = [{"user_id": r.get("user_id", ""), "who": r.get("who", ""),
+                 "text": r.get("text", ""), "said_at": r.get("said_at", "")}
+                for r in rows]
+        n_msgs += len(msgs)
+        try:
+            result = analyze_fn(gid, msgs) or {}
+        except Exception as e:
+            log(f"分析 {gid} 失敗，保留佇列下次再試：{type(e).__name__}: {e}")
+            continue
+        reqs = result.get("requests") or []
+        for r in reqs:
+            if isinstance(r, dict):
+                r["group_id"] = gid
+                r["group_name"] = (group_name_fn(gid) if group_name_fn
+                                   else gname)
+        captured += save_many(reqs)
+        mark_processed([r["id"] for r in rows])
+    log(f"處理 {n_msgs} 則訊息，抓到 {captured} 筆交辦")
+    return {"groups": len(batches), "messages": n_msgs, "captured": captured}
+
+
 def stats() -> dict:
     rows = list_recent(days=3650, limit=100000)
     by_asker: dict[str, int] = {}

@@ -21,7 +21,6 @@ import sys
 import json
 import threading
 import time
-from collections import defaultdict
 from datetime import datetime
 
 import work_capture
@@ -30,51 +29,13 @@ def log(msg: str):
     print(f"[MONITOR] {msg}", flush=True, file=sys.stderr)
 
 
-# ── 訊息暫存區 ────────────────────────────────────────────────────────────────
-# 結構：{ctx_key: [{"user_id": str, "text": str, "ts": float}, ...]}
-_buffer: dict[str, list] = defaultdict(list)
-_lock = threading.Lock()  # 保護 _buffer 的執行緒安全
-
-
-def buffer_message(ctx_key: str, user_id: str, text: str):
-    """
-    把訊息加入監控暫存區。
-    在 Webhook handler 中呼叫，必須極快（< 1ms）。
-    只做 list.append，不做任何 I/O 或網路請求。
-    """
-    with _lock:
-        _buffer[ctx_key].append({
-            "user_id": user_id,
-            "text": text[:200],  # 截斷過長的訊息
-            "ts": time.time(),
-        })
-
-
-# 一個群組最多囤這麼多則，避免熱鬧的群把記憶體吃光
-_MAX_BUFFER = 300
-
-
-def _drain_buffer() -> dict[str, list]:
-    """原子性取出所有訊息並清空 buffer（執行緒安全）。"""
-    with _lock:
-        snapshot = {k: list(v) for k, v in _buffer.items() if v}
-        for k in snapshot:
-            _buffer[k] = []
-        return snapshot
-
-
-def _requeue(ctx_key: str, msgs: list):
-    """沒達門檻的訊息放回去，等下一輪湊齊再一起看。
-
-    ★ 這裡以前是直接丟掉的。判斷「有沒有危險」時丟掉還說得過去——
-    真的出事通常會有一串對話；但判斷「有沒有人交辦」不行：
-    「麻煩你下週給我報價單」就是孤零零一則，在安靜的群組裡永遠湊不到 5 則，
-    於是那句話會被永久丟棄。囤著等，配合 max_wait 保證每則最後都會被看過一次。
-    """
-    with _lock:
-        _buffer[ctx_key] = msgs + _buffer[ctx_key]
-        if len(_buffer[ctx_key]) > _MAX_BUFFER:
-            del _buffer[ctx_key][:-_MAX_BUFFER]
+# ── 訊息暫存區：已經搬進資料庫 ────────────────────────────────────────────────
+#
+# 這裡以前有一個記憶體 buffer（buffer_message / _drain_buffer）。
+# 2026-09-14 移除：這支跑在 Render 免費方案上，行程會休眠也會自己重啟，
+# 實測 5 分鐘內就被換掉一次——囤在記憶體的訊息全部蒸發，
+# 分析永遠等不到那一刻。現在 webhook 收到就寫進 pending_messages
+# （見 work_capture.queue_message），這個模組只負責把佇列消化掉。
 
 
 # ── Claude 預警分析 ───────────────────────────────────────────────────────────
@@ -195,19 +156,52 @@ def _group_name(ctx_key: str, get_config) -> str:
     return ctx_key
 
 
+def make_analyzer(claude_client, get_config, push_fn, profile_fn=None):
+    """做出一個 analyze_fn(group_id, msgs)，給 work_capture.process_pending 用。
+
+    一次呼叫同時處理兩件事：有預警就立刻推播，交辦則交給呼叫端存起來。
+    兩條路共用同一次 API——訊息本來就要看一遍，沒道理看兩次。
+    """
+    def analyze(group_id: str, msgs: list) -> dict:
+        cfg = get_config() or {}
+        model = cfg.get("text_model", "claude-haiku-4-5-20251001")
+        for m in msgs:
+            if not m.get("who"):
+                m["who"] = work_capture.resolve_name(
+                    group_id, m.get("user_id", ""), profile_fn)
+        log(f"Analyzing {len(msgs)} msgs from {group_id}")
+        result = _analyze(claude_client, model, group_id, msgs) or {}
+        if result.get("alert"):
+            try:
+                push_fn(_format_alert(group_id, result))
+                log(f"Alert sent to boss: {result.get('summary')}")
+            except Exception as e:
+                log(f"Failed to send alert: {e}")
+        if not cfg.get("capture_requests", True):
+            result["requests"] = []
+        return result
+
+    return analyze
+
+
 def start_monitor(claude_client, get_config, push_fn, profile_fn=None):
     """
     啟動背景監控執行緒（daemon thread，程式結束時自動終止）。
+
+    ★ 2026-09-14 改寫：訊息不再囤在記憶體。這支跑在 Render 免費方案上，
+      行程會休眠也會自己重啟，實測 5 分鐘內就被換掉一次——囤著的訊息
+      全部蒸發，等於這條線永遠不會有東西。現在收到就寫進 pending_messages，
+      這裡只負責「定期把佇列消化掉」，行程死幾次都不影響。
+      真正保證會被處理的是 brand-db 按同步時那一下（見 app.py 的
+      /internal/work-requests），這個執行緒只是讓預警不用等人按。
 
     參數：
         claude_client  : anthropic.Anthropic 實例
         get_config     : callable，回傳當前 APP_CONFIG dict
         push_fn        : callable(text: str)，發送預警私訊給老闆
-                         傳入 app.notify_boss 即可，它內部自動找老闆 ID
         profile_fn     : callable(group_id, user_id) -> 顯示名稱（可省略）
-                         沒給的話交辦紀錄裡的「誰」會是 user id 短碼，
-                         統計「誰一直在丟工作」時就看不出是誰。
     """
+    analyze = make_analyzer(claude_client, get_config, push_fn, profile_fn)
 
     def _worker():
         log("Background monitor thread started ✓")
@@ -215,63 +209,21 @@ def start_monitor(claude_client, get_config, push_fn, profile_fn=None):
             cfg      = get_config()
             interval = cfg.get("monitor_interval_seconds", 300)
             min_msgs = cfg.get("monitor_min_messages", 5)
-            model    = cfg.get("text_model", "claude-haiku-4-5-20251001")
-            capture  = cfg.get("capture_requests", True)
-            # 沒達門檻的訊息最多囤這麼久，時間到就算只有一則也要看一次
-            max_wait = cfg.get("monitor_max_wait_seconds", 1800)
-
-            # 等待下一個分析週期
             time.sleep(interval)
 
-            snapshot = _drain_buffer()
-            if not snapshot:
-                continue
-            now = time.time()
-
-            for ctx_key, msgs in snapshot.items():
-                if len(msgs) < min_msgs:
-                    oldest = min((m.get("ts", now) for m in msgs), default=now)
-                    if now - oldest < max_wait:
-                        # 還沒等夠久：放回去湊，不要丟掉（交辦常常只有一句）
-                        _requeue(ctx_key, msgs)
-                        log(f"Hold {ctx_key}: {len(msgs)} msgs, "
-                            f"waited {int(now - oldest)}s / {max_wait}s")
-                        continue
-                    log(f"{ctx_key}: 只有 {len(msgs)} 則但已等 "
-                        f"{int(now - oldest)}s，還是分析一次")
-
-                # 先把 user id 換成顯示名稱（有快取，同一個人只查一次）
-                for m in msgs:
-                    m["who"] = work_capture.resolve_name(
-                        ctx_key, m.get("user_id", ""), profile_fn)
-
-                log(f"Analyzing {len(msgs)} msgs from {ctx_key}")
-                result = _analyze(claude_client, model, ctx_key, msgs)
-                if not result:
+            try:
+                pending = work_capture.pending_count()
+                if pending < min_msgs:
+                    # 不夠就先擺著。不會掉——躺在資料庫裡，
+                    # 老闆按同步時一定會被處理到。
+                    if pending:
+                        log(f"佇列 {pending} 則，未達門檻 {min_msgs}，等下一輪")
                     continue
-
-                if result.get("alert"):
-                    text = _format_alert(ctx_key, result)
-                    try:
-                        push_fn(text)          # ← 只傳 text，老闆 ID 由 notify_boss 管理
-                        log(f"Alert sent to boss: {result.get('summary')}")
-                    except Exception as e:
-                        log(f"Failed to send alert: {e}")
-
-                # 這批訊息本來分析完就丟掉了。交辦留下來，老闆的 brand-db 會來拉。
-                # 失敗絕不能影響預警——預警是即時的，交辦晚一輪沒關係。
-                if capture:
-                    try:
-                        rows = result.get("requests") or []
-                        for r in rows:
-                            if isinstance(r, dict):
-                                r["group_id"] = ctx_key
-                                r["group_name"] = _group_name(ctx_key, get_config)
-                        n = work_capture.save_many(rows)
-                        if n:
-                            log(f"Captured {n} work requests from {ctx_key}")
-                    except Exception as e:
-                        log(f"Capture failed: {type(e).__name__}: {e}")
+                work_capture.process_pending(
+                    analyze,
+                    group_name_fn=lambda g: _group_name(g, get_config))
+            except Exception as e:
+                log(f"worker error: {type(e).__name__}: {e}")
 
     t = threading.Thread(target=_worker, daemon=True, name="monitor-thread")
     t.start()

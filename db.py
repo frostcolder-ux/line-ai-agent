@@ -67,6 +67,24 @@ def init_db():
             timestamp   TEXT         NOT NULL
         );
 
+        -- 收到但還沒分析的群組訊息。
+        -- ★ 為什麼不放記憶體：Render 免費方案會休眠、也會自己重啟，
+        --   行程一沒就把暫存沖掉。2026-09-14 實測 5 分鐘內就被清一次，
+        --   「安靜群組囤 30 分鐘再分析」的設計在這種環境下永遠等不到。
+        CREATE TABLE IF NOT EXISTS pending_messages (
+            id         SERIAL  PRIMARY KEY,
+            group_id   TEXT    NOT NULL DEFAULT '',
+            group_name TEXT    NOT NULL DEFAULT '',
+            user_id    TEXT    NOT NULL DEFAULT '',
+            who        TEXT    NOT NULL DEFAULT '',
+            text       TEXT    NOT NULL DEFAULT '',
+            said_at    TEXT    NOT NULL DEFAULT '',
+            processed  INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_pending_unprocessed
+            ON pending_messages(processed, group_id);
+
         -- 群組裡抓到的交辦。小凡本來就看得到每一則訊息，
         -- 以前分析完就丟掉；留下來之後由老闆本機的 brand-db 來拉。
         -- fingerprint 唯一：同一則訊息被分析兩次也只會有一筆。

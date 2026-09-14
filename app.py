@@ -31,6 +31,7 @@ import os
 import sys
 import json
 import base64
+import datetime as _dt
 import time
 import requests
 import anthropic
@@ -383,7 +384,23 @@ def callback():
                         poll.record_vote(ctx_key, user_id, text)
                 except Exception as e:
                     log(f"poll vote capture error: {e}")
-                monitor.buffer_message(ctx_key, user_id, text)
+
+                # 直接寫進資料庫佇列，不放記憶體——這支跑在會休眠也會重啟的
+                # 免費方案上，囤在記憶體的訊息撐不到下一次分析。
+                # 顯示名稱不在這裡查（那是一次 LINE API 呼叫，webhook 要快），
+                # 分析時才補。
+                try:
+                    import work_capture
+                    when = evt.get("timestamp")
+                    said_at = (
+                        _dt.datetime.fromtimestamp(when / 1000).strftime(
+                            "%Y-%m-%d %H:%M:%S") if when else "")
+                    work_capture.queue_message(
+                        ctx_key, monitor._group_name(ctx_key,
+                                                     lambda: APP_CONFIG),
+                        user_id, "", text, said_at)
+                except Exception as e:
+                    log(f"queue_message error: {e}")
 
     except Exception as e:
         log(f"Pre-parse error: {e}")
@@ -684,8 +701,27 @@ def internal_work_requests():
         days = max(1, min(int(request.args.get("days", 14)), 365))
     except ValueError:
         days = 14
+
+    # ★ 先把還沒分析的訊息消化掉再回。
+    #   背景執行緒在會休眠的免費方案上不保證跑得到，但「老闆按同步」這個
+    #   動作一定會送到這裡——把處理掛在這一下，整條路才有確定性。
+    processed = {}
+    if request.args.get("process", "1") != "0":
+        try:
+            import monitor
+            processed = work_capture.process_pending(
+                monitor.make_analyzer(claude, lambda: APP_CONFIG, notify_boss,
+                                      group_member_name),
+                group_name_fn=lambda g: monitor._group_name(
+                    g, lambda: APP_CONFIG))
+        except Exception as e:
+            log(f"process_pending error: {type(e).__name__}: {e}")
+            processed = {"error": str(e)}
+
     rows = work_capture.list_recent(days=days)
     return jsonify({"days": days, "count": len(rows), "requests": rows,
+                    "processed": processed,
+                    "pending": work_capture.pending_count(),
                     "stats": work_capture.stats()})
 
 
