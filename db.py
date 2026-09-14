@@ -67,6 +67,28 @@ def init_db():
             timestamp   TEXT         NOT NULL
         );
 
+        -- 群組裡抓到的交辦。小凡本來就看得到每一則訊息，
+        -- 以前分析完就丟掉；留下來之後由老闆本機的 brand-db 來拉。
+        -- fingerprint 唯一：同一則訊息被分析兩次也只會有一筆。
+        CREATE TABLE IF NOT EXISTS captured_requests (
+            id          SERIAL       PRIMARY KEY,
+            group_id    TEXT         NOT NULL DEFAULT '',
+            group_name  TEXT         NOT NULL DEFAULT '',
+            asker       TEXT         NOT NULL DEFAULT '',
+            said_at     TEXT         NOT NULL DEFAULT '',
+            raw         TEXT         NOT NULL DEFAULT '',
+            title       TEXT         NOT NULL DEFAULT '',
+            detail      TEXT         NOT NULL DEFAULT '',
+            kind        TEXT         NOT NULL DEFAULT 'other',
+            project     TEXT         NOT NULL DEFAULT '',
+            due         TEXT         NOT NULL DEFAULT '',
+            urgency     TEXT         NOT NULL DEFAULT 'mid',
+            blocking    TEXT         NOT NULL DEFAULT '',
+            confidence  TEXT         NOT NULL DEFAULT '',
+            fingerprint TEXT         NOT NULL UNIQUE,
+            created_at  TEXT         NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS farm_tasks (
             id          SERIAL       PRIMARY KEY,
             description TEXT         NOT NULL,

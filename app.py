@@ -202,6 +202,18 @@ def push_message(target_id: str, text: str):
         )
 
 
+def group_member_name(group_id: str, user_id: str) -> str:
+    """查群組成員的顯示名稱。
+
+    交辦紀錄裡的「誰」如果是 Ub20f553c… 那種 id，統計「誰一直在丟工作」
+    就等於沒統計。呼叫端（work_capture）有快取，同一個人只會查一次。
+    """
+    with ApiClient(configuration) as api_client:
+        profile = MessagingApi(api_client).get_group_member_profile(
+            group_id, user_id)
+        return getattr(profile, "display_name", "") or ""
+
+
 # ── AI 回覆（含 Tool Use） ────────────────────────────────────────────────────
 
 def get_ai_reply(user_id: str, user_message: str) -> str:
@@ -648,6 +660,35 @@ def radar_preview():
     })
 
 
+@app.route("/internal/work-requests", methods=["GET"])
+def internal_work_requests():
+    """群組裡抓到的交辦，給老闆本機的 brand-db 來拉。
+
+    為什麼是「來拉」不是「推過去」：brand-db 跑在他自己的電腦上
+    （127.0.0.1:8765），雲端推不進去。跟 brand-db 拉 farm_reports
+    即時數據同一個模式。
+
+    不做「只給沒同步過的」——brand-db 端也會用指紋去重，整個時間窗
+    都吐出去比較不怕它關機幾天。需帶 ?token= 等於 FARM_API_TOKEN。
+    """
+    import os as _os
+    required = _os.environ.get("FARM_API_TOKEN", "").strip()
+    if not required:
+        # 這裡面有夥伴的名字與原話，沒設密鑰就不開放——不像唯讀的雷達預覽
+        return {"error": "FARM_API_TOKEN not configured"}, 503
+    if request.args.get("token", "") != required:
+        return {"error": "unauthorized"}, 401
+
+    import work_capture
+    try:
+        days = max(1, min(int(request.args.get("days", 14)), 365))
+    except ValueError:
+        days = 14
+    rows = work_capture.list_recent(days=days)
+    return jsonify({"days": days, "count": len(rows), "requests": rows,
+                    "stats": work_capture.stats()})
+
+
 @app.route("/debug/webhook", methods=["GET"])
 def debug_webhook():
     return jsonify({"count": len(debug_webhooks), "webhooks": debug_webhooks})
@@ -699,6 +740,7 @@ def _start_background_services():
         claude_client=claude,
         get_config=lambda: APP_CONFIG,
         push_fn=notify_boss,   # ← 直接傳 notify_boss，內部自動找老闆 ID
+        profile_fn=group_member_name,   # 把 user id 換成看得懂的名字
     )
 
     # 2. APScheduler 排程器（靜態任務）
