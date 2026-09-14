@@ -19,6 +19,7 @@ LINE 要求 Webhook 必須在 3 秒內回應 200 OK，否則視為失敗。
 """
 import sys
 import json
+import re
 import threading
 import time
 from datetime import datetime
@@ -100,6 +101,38 @@ alert 為 false 時 severity/summary/details 給空字串即可。
 _MAX_TOKENS = 2000
 
 
+_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
+
+
+def parse_json(raw: str):
+    """把模型回的東西解析成 dict，解析不出來回 None。
+
+    ★ 這裡以前是直接 json.loads(raw)。提示詞寫了「只輸出 JSON、不要 markdown」，
+      但 haiku 照樣把答案包在 ```json ... ``` 裡——於是每一次分析都
+      JSONDecodeError，然後靜靜回 None。2026-09-14 實測：外面看起來像
+      「模型判斷沒有交辦」，其實是根本沒解析成功過。
+      提示詞求不動模型，就由這邊負責把圍欄剝掉。
+    """
+    raw = (raw or "").strip()
+    m = _FENCE.search(raw)
+    if m:
+        raw = m.group(1).strip()
+    else:
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)   # 只有開頭圍欄、結尾被截掉
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    # 前後有雜訊、中間夾著一段完整 JSON
+    i, j = raw.find("{"), raw.rfind("}")
+    if i != -1 and j > i:
+        try:
+            return json.loads(raw[i:j + 1])
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
 def _analyze(claude_client, model: str, ctx_key: str, messages: list) -> dict | None:
     """把一批訊息送給 Claude，一次拿到預警判斷與交辦清單。"""
     # 帶上時間與顯示名稱：模型要靠這兩樣才推得出「明天」是哪一天、誰交辦的
@@ -123,10 +156,10 @@ def _analyze(claude_client, model: str, ctx_key: str, messages: list) -> dict | 
         )
         raw = resp.content[0].text.strip()
         log(f"Monitor raw response: {raw[:100]}")
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        log("Monitor: Claude returned non-JSON, ignoring")
-        return None
+        out = parse_json(raw)
+        if out is None:
+            log(f"Monitor: 解析不出 JSON，原文開頭：{raw[:200]}")
+        return out
     except Exception as e:
         log(f"Monitor analysis error: {type(e).__name__}: {e}")
         return None
@@ -170,7 +203,11 @@ def make_analyzer(claude_client, get_config, push_fn, profile_fn=None):
                 m["who"] = work_capture.resolve_name(
                     group_id, m.get("user_id", ""), profile_fn)
         log(f"Analyzing {len(msgs)} msgs from {group_id}")
-        result = _analyze(claude_client, model, group_id, msgs) or {}
+        result = _analyze(claude_client, model, group_id, msgs)
+        if result is None:
+            # 分析失敗要讓呼叫端知道，不能回空 dict 假裝「沒有交辦」——
+            # 那會讓訊息被標成已處理然後永遠消失。
+            return None
         if result.get("alert"):
             try:
                 push_fn(_format_alert(group_id, result))

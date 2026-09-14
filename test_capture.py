@@ -128,6 +128,44 @@ class TestQueue(unittest.TestCase):
         self.assertFalse(self.q("寫不進去的話"))
 
 
+class TestParseJson(unittest.TestCase):
+    """模型愛把 JSON 包在 markdown 圍欄裡，提示詞寫了「不要 markdown」也沒用。
+
+    2026-09-14 實測：每一次都包。以前是直接 json.loads()，所以每一次分析
+    都 JSONDecodeError 然後靜靜回 None——外面看起來像「沒有交辦」，
+    其實是從來沒解析成功過。
+    """
+
+    GOOD = '{"alert": false, "requests": [{"title": "給報價單"}]}'
+
+    def test_乾淨的_json(self):
+        self.assertEqual(monitor.parse_json(self.GOOD)["requests"][0]["title"],
+                         "給報價單")
+
+    def test_包在圍欄裡的照樣解得出來(self):
+        for wrapped in (F + "json
+" + self.GOOD + "
+" + F,
+                        F + "
+" + self.GOOD + "
+" + F,
+                        F + "json
+" + self.GOOD):      # 結尾圍欄被截掉
+            out = monitor.parse_json(wrapped)
+            self.assertIsNotNone(out, wrapped[:20])
+            self.assertEqual(out["requests"][0]["title"], "給報價單")
+
+    def test_前後有廢話也撈得出來(self):
+        out = monitor.parse_json("好的，分析結果如下：
+" + self.GOOD + "
+以上。")
+        self.assertIsNotNone(out)
+
+    def test_真的不是_json_就回_None(self):
+        self.assertIsNone(monitor.parse_json("我沒辦法分析這段對話"))
+        self.assertIsNone(monitor.parse_json(""))
+
+
 class TestAnalyzePrompt(unittest.TestCase):
 
     def test_送進模型的對話帶時間與名字(self):

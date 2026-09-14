@@ -290,9 +290,14 @@ def process_pending(analyze_fn, group_name_fn=None, limit: int = 200) -> dict:
                 for r in rows]
         n_msgs += len(msgs)
         try:
-            result = analyze_fn(gid, msgs) or {}
+            result = analyze_fn(gid, msgs)
         except Exception as e:
             log(f"分析 {gid} 失敗，保留佇列下次再試：{type(e).__name__}: {e}")
+            continue
+        if result is None:
+            # 分析沒成功（解析不出 JSON、API 掛了…）就不要標記已處理，
+            # 否則訊息會被靜靜吃掉——這正是 2026-09-14 踩到的坑。
+            log(f"{gid} 這批沒有分析成功，保留在佇列下次再試")
             continue
         reqs = result.get("requests") or []
         for r in reqs:
