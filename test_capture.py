@@ -143,22 +143,18 @@ class TestParseJson(unittest.TestCase):
                          "給報價單")
 
     def test_包在圍欄裡的照樣解得出來(self):
-        for wrapped in (F + "json
-" + self.GOOD + "
-" + F,
-                        F + "
-" + self.GOOD + "
-" + F,
-                        F + "json
-" + self.GOOD):      # 結尾圍欄被截掉
+        fence = "`" * 3
+        for wrapped in (
+            f"{fence}json\n{self.GOOD}\n{fence}",
+            f"{fence}\n{self.GOOD}\n{fence}",
+            f"{fence}json\n{self.GOOD}",        # 結尾圍欄被截掉
+        ):
             out = monitor.parse_json(wrapped)
             self.assertIsNotNone(out, wrapped[:20])
             self.assertEqual(out["requests"][0]["title"], "給報價單")
 
     def test_前後有廢話也撈得出來(self):
-        out = monitor.parse_json("好的，分析結果如下：
-" + self.GOOD + "
-以上。")
+        out = monitor.parse_json(f"好的，分析結果如下：\n{self.GOOD}\n以上。")
         self.assertIsNotNone(out)
 
     def test_真的不是_json_就回_None(self):
