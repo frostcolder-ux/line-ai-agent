@@ -60,6 +60,9 @@ claude = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 # 在 Render → Environment 新增 BOSS_LINE_USER_ID 即可
 BOSS_LINE_USER_ID = os.environ.get("BOSS_LINE_USER_ID", "").strip()
 
+# 群組裡說「小凡，這個交給總管：…」→ 直接落地成交辦，給老闆本機的代理人處理
+AGENT_HANDOFF_MARK = os.environ.get("AGENT_HANDOFF_MARK", "交給總管").strip() or "交給總管"
+
 BASE_DIR = os.path.dirname(__file__)
 
 
@@ -434,6 +437,31 @@ def handle_message(event: MessageEvent):
 
     query = strip_keywords(user_text) or "請分析這張照片中植物的病蟲害狀況。"
 
+    # ── Priority 0a：「交給總管」──
+    # 老闆本機有個代理人（思凡總管），它透過 brand-db 來拉交辦。明講交給總管的
+    # 直接落地成一筆交辦（不等 5 分鐘一批的分析、也不靠模型判斷是不是交辦），
+    # 原句裡的「總管」就是 brand-db 那端認出要優先處理的記號。
+    if AGENT_HANDOFF_MARK in query:
+        try:
+            import monitor
+            import work_capture
+            task = query.split(AGENT_HANDOFF_MARK, 1)[1].lstrip("：:，, ").strip() or query
+            gid = getattr(event.source, "group_id", "") or ""
+            who = work_capture.resolve_name(gid, user_id, group_member_name) if gid else "老闆"
+            work_capture.save_many([{
+                "group_id": gid,
+                "group_name": monitor._group_name(gid, lambda: APP_CONFIG) if gid else "私訊",
+                "asker": who,
+                "said_at": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "raw": user_text, "title": task[:60], "detail": task,
+                "kind": "other", "urgency": "mid", "confidence": "explicit",
+            }])
+            send_reply(event.reply_token, "收到，轉給總管了。做完會回報給老闆。")
+        except Exception as e:
+            log(f"agent handoff error: {type(e).__name__}: {e}")
+            send_reply(event.reply_token, "轉給總管時出錯了，這筆沒有記到，請稍後再說一次。")
+        return
+
     # ── Priority 0：開會投票指令（純 bot 端，需群組情境）──
     try:
         import poll
@@ -675,6 +703,30 @@ def radar_preview():
         "group_reminder": farm_bridge.format_reminder(status),
         "pending_tasks": _list_tasks(status="pending"),
     })
+
+
+@app.route("/internal/agent-result", methods=["POST"])
+def internal_agent_result():
+    """思凡總管（老闆本機的代理人）做完交辦後，透過這裡推播結果給老闆。
+
+    只推給老闆一個人，不推群組——結果要不要轉達由老闆決定。
+    需帶 X-Internal-Token 標頭（或 ?token=）等於 FARM_API_TOKEN。
+    """
+    import os as _os
+    required = _os.environ.get("FARM_API_TOKEN", "").strip()
+    if not required:
+        return {"error": "FARM_API_TOKEN not configured"}, 503
+    supplied = request.headers.get("X-Internal-Token", "") or request.args.get("token", "")
+    if supplied != required:
+        return {"error": "unauthorized"}, 401
+    data = request.get_json(silent=True) or {}
+    text = str(data.get("text", "")).strip()
+    if not text:
+        return {"error": "text required"}, 400
+    if not get_boss_id():
+        return {"error": "BOSS_LINE_USER_ID not configured"}, 503
+    notify_boss("【總管回報】\n" + text[:4500])
+    return {"ok": True}
 
 
 @app.route("/internal/work-requests", methods=["GET"])
