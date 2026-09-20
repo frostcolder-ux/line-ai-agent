@@ -548,9 +548,14 @@ def handle_herb_broadcast(event: MessageEvent, text: str) -> bool:
     m = re.match(r"^(?:發送|發)香草通知\s*[:：]?\s*(.+)$", text.strip(), re.S)
     if not m:
         if text.strip() in ("香草通知人數", "香草通知名單", "通知人數"):
-            send_reply(event.reply_token,
-                       f"香草遊戲的通知名單目前 {herb_notify.count()} 人。\n"
-                       f"要發通知：傳「發送香草通知：內容」。")
+            st = herb_notify.status()
+            lines = [f"香草遊戲的通知名單目前 {st['count']} 人。"]
+            if st["error"]:
+                # 名單讀不到時也會顯示 0 人，那跟「還沒有人訂閱」看起來一樣，要講出來
+                lines.append(f"⚠ 名單讀不到：{st['error']}")
+            lines.append("玩家要傳一句「香草通知」給我才算，只加好友不算。")
+            lines.append("要發通知：傳「發送香草通知：內容」。")
+            send_reply(event.reply_token, "\n".join(lines))
             return True
         return False
     body = m.group(1).strip()
@@ -894,6 +899,8 @@ def health():
         # 和「部署好了」——免費方案建置要好幾分鐘，中間問 /health 還是舊版，
         # 很容易誤判成自動部署壞掉。
         "commit":          os.environ.get("RENDER_GIT_COMMIT", "")[:7],
+        # 通知名單存哪裡、幾個人、有沒有出錯。「沒人訂閱」與「根本沒存成」要分得出來
+        "herb_notify":     herb_notify.status(),
     }, 200
 
 
