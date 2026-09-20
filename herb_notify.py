@@ -140,6 +140,27 @@ def count() -> int:
     return len(recipients())
 
 
+def status() -> dict:
+    """存哪裡、幾個人、有沒有出錯。
+
+    recipients() 查不到表時只會回空清單，看起來跟「還沒有人訂閱」一模一樣。
+    這支把兩種情況分開，才有辦法從外面（/health）判斷是沒人訂閱還是根本沒存成。
+    """
+    if not _use_pg():
+        return {"store": "json", "count": len(_load_json()), "error": ""}
+    from db import get_conn
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM herb_notify")
+        n = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        return {"store": "postgres", "count": n, "error": ""}
+    except Exception as e:
+        return {"store": "postgres", "count": 0, "error": f"{type(e).__name__}: {e}"[:140]}
+
+
 def chunks(ids: list[str], size: int = 150) -> list[list[str]]:
     """LINE 的 multicast 一次最多 500 人；抓 150 保守一點，失敗時重送的範圍也小。"""
     return [ids[i:i + size] for i in range(0, len(ids), size)]
