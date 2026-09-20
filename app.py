@@ -791,6 +791,10 @@ def health():
         # 白名單有沒有生效、目前核准了幾個群組。部署後從外面看得出跑的是不是新版
         "whitelist":       True,
         "approved_groups": len(access.approved_ids()),
+        # Render 會把這次部署的 commit 放進環境變數。有它才分得出「推上去了」
+        # 和「部署好了」——免費方案建置要好幾分鐘，中間問 /health 還是舊版，
+        # 很容易誤判成自動部署壞掉。
+        "commit":          os.environ.get("RENDER_GIT_COMMIT", "")[:7],
     }, 200
 
 
