@@ -24,6 +24,11 @@ def _make_job(push_fn, group_id: str, message: str, name: str):
     def _job():
         log(f"Running scheduled task: {name}")
         try:
+            # 核准被收回、或舊設定裡殘留的群組，不要再推播（見 access.py）
+            import access
+            if not access.is_approved(group_id):
+                log(f"  · Skipped: {group_id[-8:]} 不在白名單")
+                return
             push_fn(group_id, message)
             log(f"  ✓ Pushed to {group_id}")
         except Exception as e:

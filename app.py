@@ -48,6 +48,8 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent, JoinEvent
 
+import access  # 誰可以使喚小凡：老闆、已核准的群組、其他人
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "selvans-secret-2024-change-me")
 
@@ -142,6 +144,50 @@ def load_file(path: str, default: str = "") -> str:
 
 def is_triggered(text: str) -> bool:
     return any(kw in text for kw in TRIGGER_KEYWORDS)
+
+
+# 陌生人私訊時的固定回覆。小凡是內部助理，對外只給官網。
+OUTSIDE_REPLY = """我是小凡，思凡自然農園的內部小幫手，只在農園的工作群組裡服務。
+
+想認識思凡的香草和社會農場，或是要訂購、談合作：
+https://www.selvansimpact.com
+
+從官網的「洽談合作」留言，我們會回覆你。"""
+
+# 群組被核准之後才發這一則。以前是一進群組就發，等於還沒確認身分就先自我介紹一輪。
+GROUP_WELCOME = """大家好！我是小凡 🌿
+思凡社會農場的 AI 小幫手，很高興加入這個群組！
+
+你可以這樣呼叫我：
+• 說「小凡」+ 問題 → 我來回答
+• 傳照片後說「小凡幫我看看」→ 分析植物狀況
+• 「小凡 這週誰還沒交週報」→ 查週報進度
+• 「小凡 大溪這週採收多少」→ 查真實採收量
+• 「小凡 開投票 開會時間 10點/14點/16點」→ 發起投票
+
+有任何農業問題歡迎隨時問我！🌱"""
+# 同一個人一天只回一次，免得被當成聊天機器人一直丟訊息。
+# 記在記憶體就好：Render 重啟後最多多回一次，不值得為它寫一張表。
+_outside_replied: dict[str, str] = {}
+
+
+def group_display_name(group_id: str) -> str:
+    """查群組名稱，查不到就用 ID 末八碼——老闆要看得懂這是哪一個群組。"""
+    try:
+        with ApiClient(configuration) as api_client:
+            return MessagingApi(api_client).get_group_summary(group_id).group_name
+    except Exception as e:
+        log(f"group_display_name error: {type(e).__name__}: {e}")
+        return group_id[-8:]
+
+
+def leave_group(group_id: str):
+    try:
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).leave_group(group_id)
+        log(f"left group {group_id[-8:]}")
+    except Exception as e:
+        log(f"leave_group error: {type(e).__name__}: {e}")
 
 
 def source_key(event: MessageEvent) -> str:
@@ -374,9 +420,11 @@ def callback():
 
             # ── 步驟 2：把「未觸發關鍵字」的訊息存入監控暫存 ──
             # 只監控群組訊息（src_type = group），保護個人隱私
+            # 只收已核准群組：沒核准的群組一個字都不留，更不會送進 AI 分析
             if (msg.get("type") == "text"
                     and src.get("type") == "group"
-                    and not is_triggered(msg.get("text", ""))):
+                    and not is_triggered(msg.get("text", ""))
+                    and access.is_approved(src.get("groupId") or src.get("group_id", ""))):
                 ctx_key = src.get("groupId") or src.get("group_id", "unknown")
                 user_id = src.get("userId") or src.get("user_id", "unknown")
                 text = msg.get("text", "")
@@ -417,6 +465,73 @@ def callback():
     return "OK"
 
 
+def reply_to_outsider(event: MessageEvent, user_id: str):
+    """陌生人私訊：回一則固定說明，同一個人一天只回一次。"""
+    today = _dt.date.today().isoformat()
+    if _outside_replied.get(user_id) == today:
+        return
+    _outside_replied[user_id] = today
+    try:
+        # 用回覆不用推播：回覆不計入官方帳號的訊息則數
+        send_reply(event.reply_token, OUTSIDE_REPLY)
+        log(f"outsider replied: {user_id[:10]}...")
+    except Exception as e:
+        log(f"outsider reply error: {type(e).__name__}: {e}")
+
+
+def start_serving(group_id: str, name: str):
+    """核准之後才做的事：開週排程、在群組自我介紹。沒核准的群組不該收到任何推播。"""
+    try:
+        import scheduler_tasks
+        scheduler_tasks.add_group_task(push_message, group_id, name)
+    except Exception as e:
+        log(f"approve schedule error: {type(e).__name__}: {e}")
+
+
+def handle_boss_command(event: MessageEvent, action: str, code: str) -> bool:
+    """老闆在私訊裡的群組管理指令（核准 A7K2／拒絕 A7K2／群組清單）。有處理就回 True。"""
+    if action == "list":
+        send_reply(event.reply_token, access.summary())
+        return True
+
+    row = access.find_by_code(code)
+    if not row:
+        send_reply(event.reply_token, f"找不到代號 {code}。傳「群組清單」看目前有哪些。")
+        return True
+
+    if action == "approve":
+        access.decide(code, "approved")
+        start_serving(row["group_id"], row["name"])
+        try:
+            push_message(row["group_id"], GROUP_WELCOME)
+        except Exception as e:
+            log(f"approve welcome error: {type(e).__name__}: {e}")
+        send_reply(event.reply_token, f"好，「{row['name']}」開始服務了。")
+        return True
+
+    access.decide(code, "rejected")
+    leave_group(row["group_id"])
+    send_reply(event.reply_token, f"我已經退出「{row['name']}」。")
+    return True
+
+
+def decide_group(event: MessageEvent, group_id: str, decision: str):
+    """老闆直接在那個群組裡說「小凡 核准」或「小凡 拒絕」。"""
+    row = access.remember_pending(group_id, group_display_name(group_id))
+    if decision == "approve":
+        access.decide(row["code"], "approved")
+        start_serving(group_id, row["name"])
+        # 自我介紹用回覆發，不用推播：同樣一則訊息，回覆不計入訊息則數
+        send_reply(event.reply_token, GROUP_WELCOME)
+        return
+    access.decide(row["code"], "rejected")
+    try:
+        send_reply(event.reply_token, "好，那我先離開了。需要我的時候再把我加回來。")
+    except Exception as e:
+        log(f"reject reply error: {type(e).__name__}: {e}")
+    leave_group(group_id)
+
+
 # ── 文字訊息處理 ──────────────────────────────────────────────────────────────
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -431,6 +546,32 @@ def handle_message(event: MessageEvent):
     user_text = event.message.text
     user_id   = event.source.user_id
     ctx_key   = source_key(event)
+    role      = access.role_of(event.source, get_boss_id())
+
+    # ── 身分先擋在最前面（見 access.py）──
+    # 陌生人：只回一則固定說明，不進 AI、不查資料、不寫任何東西。
+    # 還沒核准的群組：完全安靜，等老闆核准。
+    if role == access.OUTSIDE:
+        group_id = getattr(event.source, "group_id", None)
+        # 老闆人就在那個還沒核准的群組裡，直接說「小凡 核准」也算數，
+        # 不必切回私訊去找代號
+        if group_id and get_boss_id() and user_id == get_boss_id():
+            decision = access.parse_group_decision(strip_keywords(user_text))
+            if decision:
+                decide_group(event, group_id, decision)
+                return
+        # 私訊來的陌生人回一則說明（不管他有沒有叫「小凡」，他是特地來傳訊息的）；
+        # 還沒核准的群組其他人說什麼都不回，那裡本來就不該有小凡的聲音。
+        if not group_id:
+            reply_to_outsider(event, user_id)
+        return
+
+    # 老闆的管理指令：核准／拒絕群組、看清單。要先於觸發詞判斷，
+    # 這樣他直接回「核准 A7K2」就好，不必每次都寫「小凡」。
+    if role == access.BOSS:
+        command = access.parse_boss_command(strip_keywords(user_text) or user_text)
+        if command and handle_boss_command(event, *command):
+            return
 
     if not is_triggered(user_text):
         return
@@ -441,7 +582,13 @@ def handle_message(event: MessageEvent):
     # 老闆本機有個代理人（思凡總管），它透過 brand-db 來拉交辦。明講交給總管的
     # 直接落地成一筆交辦（不等 5 分鐘一批的分析、也不靠模型判斷是不是交辦），
     # 原句裡的「總管」就是 brand-db 那端認出要優先處理的記號。
+    #
+    # ★ 只有老闆說的才真的交給代理人
+    #   群組裡的夥伴也會看到這個用法。代理人拿到交辦就會去做事，所以別人說的
+    #   只存成一般交辦等老闆確認——記號（總管兩個字）不留在存下來的原句裡，
+    #   brand-db 那端就不會把它當成要優先執行的那種。
     if AGENT_HANDOFF_MARK in query:
+        to_agent = role == access.BOSS
         try:
             import monitor
             import work_capture
@@ -453,13 +600,15 @@ def handle_message(event: MessageEvent):
                 "group_name": monitor._group_name(gid, lambda: APP_CONFIG) if gid else "私訊",
                 "asker": who,
                 "said_at": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "raw": user_text, "title": task[:60], "detail": task,
+                "raw": user_text if to_agent else user_text.replace(AGENT_HANDOFF_MARK, "").strip(),
+                "title": task[:60], "detail": task,
                 "kind": "other", "urgency": "mid", "confidence": "explicit",
             }])
-            send_reply(event.reply_token, "收到，轉給總管了。做完會回報給老闆。")
+            send_reply(event.reply_token, "收到，轉給總管了。做完會回報給老闆。" if to_agent
+                       else "收到，我記下來了，會讓老闆確認。")
         except Exception as e:
             log(f"agent handoff error: {type(e).__name__}: {e}")
-            send_reply(event.reply_token, "轉給總管時出錯了，這筆沒有記到，請稍後再說一次。")
+            send_reply(event.reply_token, "記這一筆的時候出錯了，沒有記到，請稍後再說一次。")
         return
 
     # ── Priority 0：開會投票指令（純 bot 端，需群組情境）──
@@ -524,8 +673,8 @@ def handle_message(event: MessageEvent):
     except Exception as e:
         log(f"handle_message FATAL: {type(e).__name__}: {e}")
         try:
-            send_reply(event.reply_token,
-                       f"⚠️ 錯誤：{type(e).__name__}\n{str(e)[:120]}")
+            # 錯誤內容只寫進 log。把 exception 原文回到聊天室，等於把內部結構講給看得到的人聽
+            send_reply(event.reply_token, "抱歉，我這邊出了點狀況，沒有處理完。請再說一次，或稍後再試。")
         except Exception:
             pass
 
@@ -535,13 +684,14 @@ def handle_message(event: MessageEvent):
 @handler.add(JoinEvent)
 def handle_join(event: JoinEvent):
     """
-    小凡被加入群組時自動執行：
-    1. 在群組發歡迎訊息
-    2. 自動把此群組加入週排程推播
-    3. Push 通知老闆
-    """
-    import scheduler_tasks
+    小凡被加入群組時：先問過老闆再開始服務。
 
+    以前是進群組就自我介紹、自動開週排程推播、通知老闆「已啟用」。
+    問題是任何加小凡好友的人都能把它拉進自己的群組，等於外人可以
+    讓它開始推播（吃訊息額度）並監聽那個群組的所有對話。
+
+    現在改成：先安靜，私訊老闆一組代號，他回「核准 代號」才開始服務。
+    """
     src = event.source
     group_id = getattr(src, "group_id", None)
     if not group_id:
@@ -549,32 +699,27 @@ def handle_join(event: JoinEvent):
 
     log(f"Joined group: {group_id}")
 
-    # 1. 群組歡迎訊息
-    welcome = (
-        "大家好！我是小凡 🌿\n"
-        "思凡社會農場的 AI 小幫手，很高興加入這個群組！\n\n"
-        "你可以這樣呼叫我：\n"
-        "• 說「小凡」+ 問題 → 我來回答\n"
-        "• 傳照片後說「小凡幫我看看」→ 分析植物狀況\n"
-        "• 「小凡 這週誰還沒交週報」→ 查週報進度\n"
-        "• 「小凡 大溪這週採收多少」→ 查真實採收量\n"
-        "• 「小凡 開投票 開會時間 10點/14點/16點」→ 發起投票\n\n"
-        "有任何農業問題歡迎隨時問我！🌱"
+    if access.is_approved(group_id):
+        # 之前核准過又被重新加入（例如被踢出再加回來）：照舊開始服務
+        try:
+            send_reply(event.reply_token, GROUP_WELCOME)
+        except Exception as e:
+            log(f"Join welcome reply failed: {e}")
+        return
+
+    name = group_display_name(group_id)
+    row = access.remember_pending(group_id, name)
+    try:
+        send_reply(event.reply_token, "大家好，我是小凡。我先跟思凡確認一下，確認完才開始幫忙。")
+    except Exception as e:
+        log(f"Join pending reply failed: {e}")
+
+    notify_boss(
+        f"小凡被加入群組「{name}」。\n"
+        f"代號 {row['code']}\n\n"
+        f"回「核准 {row['code']}」開始服務，回「拒絕 {row['code']}」我就退出。\n"
+        f"在核准之前，我不會回話、不會推播，也不會看那個群組的訊息。"
     )
-    try:
-        send_reply(event.reply_token, welcome)
-    except Exception as e:
-        log(f"Join welcome reply failed: {e}")
-
-    # 2. 自動加入週排程
-    try:
-        added = scheduler_tasks.add_group_task(push_message, group_id)
-        log(f"Auto scheduled task added: {added}")
-    except Exception as e:
-        log(f"Auto schedule failed: {e}")
-
-    # 3. 主動私訊通知老闆（使用 notify_boss，自動讀取 env var 或 config）
-    notify_boss(f"📢 小凡已加入新群組！\n群組 ID：{group_id}\n週排程推播已自動啟用 ✅")
 
 
 # ── 圖片訊息處理 ──────────────────────────────────────────────────────────────
@@ -582,6 +727,9 @@ def handle_join(event: JoinEvent):
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image(event: MessageEvent):
     """只存圖片 ID，不自動回覆（避免群組每張圖都觸發）。"""
+    # 陌生人與還沒核准的群組的照片不留，免得他們接著說「小凡幫我看看」
+    if access.role_of(event.source, get_boss_id()) == access.OUTSIDE:
+        return
     ctx_key = source_key(event)
     recent_images[ctx_key] = (event.message.id, time.time())
     log(f"Image stored: id={event.message.id} ctx={ctx_key}")
@@ -611,6 +759,9 @@ def health():
         "image_model":     APP_CONFIG.get("image_model"),
         "boss_configured": bool(get_boss_id()),
         "boss_source":     "env_var" if BOSS_LINE_USER_ID else ("config" if APP_CONFIG.get("boss_user_id") else "not_set"),
+        # 白名單有沒有生效、目前核准了幾個群組。部署後從外面看得出跑的是不是新版
+        "whitelist":       True,
+        "approved_groups": len(access.approved_ids()),
     }, 200
 
 
@@ -822,6 +973,13 @@ def _start_background_services():
     # 0. 初始化資料庫（有 DATABASE_URL 才會執行）
     from db import init_db
     init_db()
+
+    # 0b. 白名單第一次上線時，把設定檔裡已經在用的群組直接列為已核准，
+    #     否則現有的工作群組會全部被當成外人，小凡會整個安靜下來
+    try:
+        access.seed_from_config(APP_CONFIG)
+    except Exception as e:
+        log(f"access seed error: {type(e).__name__}: {e}")
 
     # 1. 背景監控執行緒（push_fn 改用 notify_boss，自動讀取 env var / config）
     monitor.start_monitor(

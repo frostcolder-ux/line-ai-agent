@@ -107,6 +107,17 @@ def init_db():
             created_at  TEXT         NOT NULL
         );
 
+        -- 哪些群組可以使喚小凡（見 access.py）。
+        -- 沒有這張表以前，任何人都能把小凡拉進自己的群組，它就會開始推播與監聽。
+        CREATE TABLE IF NOT EXISTS line_access (
+            group_id   TEXT PRIMARY KEY,
+            name       TEXT NOT NULL DEFAULT '',
+            code       TEXT NOT NULL DEFAULT '',
+            status     TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL DEFAULT '',
+            decided_at TEXT NOT NULL DEFAULT ''
+        );
+
         CREATE TABLE IF NOT EXISTS farm_tasks (
             id          SERIAL       PRIMARY KEY,
             description TEXT         NOT NULL,
