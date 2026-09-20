@@ -245,10 +245,20 @@ def parse_boss_command(text: str) -> tuple[str, str] | None:
     而他真正想要的是小凡照平常那樣回話。
     """
     import re
-    t = (text or "").strip()
-    m = re.match(r"^(核准|同意|拒絕|不要)\s*([A-Za-z0-9]{3,6})$", t)
+    t = (text or "").strip().strip("！!。．.")
+    # 中間可以夾「代號」「群組」「：」——人不會每次都照最精簡的格式打。
+    # 2026-09-20 實際踩到：老闆傳「拒絕代號 F3VH」完全沒反應，因為只認「拒絕 F3VH」。
+    m = re.match(
+        r"^(核准|同意|可以|拒絕|不要|退出)\s*(?:這個|那個)?\s*(?:群組)?\s*(?:的)?\s*(?:代號)?\s*[:：,，]?\s*([A-Za-z0-9]{3,6})$",
+        t,
+    )
     if m:
-        return ("approve" if m.group(1) in ("核准", "同意") else "reject", m.group(2))
-    if t in ("群組清單", "群組列表", "哪些群組"):
+        return ("approve" if m.group(1) in ("核准", "同意", "可以") else "reject", m.group(2))
+    if t in ("群組清單", "群組列表", "哪些群組", "待核准", "群組"):
+        return ("list", "")
+    # 看得出是在做決定、但代號讀不出來（打錯、漏掉、長度不對）：回清單讓他看到正確的代號。
+    # 不要沉默——沉默看起來就跟壞掉一樣。
+    # 條件收緊到「有提代號或有英數字」，免得把「核准這件事再跟我說」這種正常對話吃掉。
+    if re.match(r"^(核准|同意|拒絕|不要|退出)", t) and ("代號" in t or re.search(r"[A-Za-z0-9]{2,8}", t)):
         return ("list", "")
     return None

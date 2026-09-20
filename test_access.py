@@ -70,6 +70,18 @@ class AccessTest(unittest.TestCase):
         self.assertIsNone(access.parse_boss_command("核准這件事再跟我說"))
         self.assertIsNone(access.parse_boss_command("這週誰還沒交週報"))
 
+    def test_boss_command_tolerates_extra_words(self):
+        """老闆不會每次都照最精簡的格式打（2026-09-20 實際踩到「拒絕代號 F3VH」沒反應）。"""
+        self.assertEqual(access.parse_boss_command("拒絕代號 F3VH"), ("reject", "F3VH"))
+        self.assertEqual(access.parse_boss_command("核准群組 A7K2"), ("approve", "A7K2"))
+        self.assertEqual(access.parse_boss_command("核准：A7K2"), ("approve", "A7K2"))
+        self.assertEqual(access.parse_boss_command("核准 A7K2。"), ("approve", "A7K2"))
+        # 代號讀不出來時回清單，不要沉默
+        self.assertEqual(access.parse_boss_command("拒絕代號"), ("list", ""))
+        self.assertEqual(access.parse_boss_command("核准 F3VH2XYZW"), ("list", ""))
+        # 正常對話不能被當成指令
+        self.assertIsNone(access.parse_boss_command("核准這件事再跟我說"))
+
     def test_group_decision_words(self):
         """老闆人在那個群組裡時，說「核准」兩個字就算數，不必找代號。"""
         self.assertEqual(access.parse_group_decision("核准"), "approve")
