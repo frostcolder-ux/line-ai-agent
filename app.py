@@ -49,6 +49,7 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent, JoinEvent
 
 import access  # 誰可以使喚小凡：老闆、已核准的群組、其他人
+import herb_notify  # 香草遊戲的通知名單
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "selvans-secret-2024-change-me")
@@ -490,6 +491,68 @@ def start_serving(group_id: str, name: str):
         log(f"approve schedule error: {type(e).__name__}: {e}")
 
 
+def handle_herb_notify(event: MessageEvent, user_id: str, want: str):
+    """玩家傳「香草通知」／「取消香草通知」。用回覆，不佔訊息則數。"""
+    try:
+        if want == "on":
+            fresh = herb_notify.subscribe(user_id)
+            send_reply(event.reply_token, herb_notify.WELCOME if fresh
+                       else "你已經在名單上了，新內容開放時我會通知你。不想收就傳「取消香草通知」。")
+            if fresh:
+                log(f"herb notify +1（目前 {herb_notify.count()} 人）")
+        else:
+            herb_notify.unsubscribe(user_id)
+            send_reply(event.reply_token, herb_notify.BYE)
+    except Exception as e:
+        log(f"herb notify error: {type(e).__name__}: {e}")
+        try:
+            send_reply(event.reply_token, "抱歉，我這邊出了點狀況，沒有記到。請稍後再傳一次。")
+        except Exception:
+            pass
+
+
+def multicast(user_ids: list[str], text: str) -> int:
+    """發給一群人。回傳成功送出的人數。"""
+    from linebot.v3.messaging import MulticastRequest
+    sent = 0
+    with ApiClient(configuration) as api_client:
+        api = MessagingApi(api_client)
+        for batch in herb_notify.chunks(user_ids):
+            try:
+                api.multicast(MulticastRequest(to=batch, messages=[TextMessage(text=text)]))
+                sent += len(batch)
+            except Exception as e:
+                log(f"multicast error: {type(e).__name__}: {e}")
+    return sent
+
+
+def handle_herb_broadcast(event: MessageEvent, text: str) -> bool:
+    """
+    老闆私訊「發送香草通知：內容」→ 發給名單上的所有人。
+
+    這是唯一會真的花到訊息則數的地方（一人一則），所以只有老闆能用，
+    而且內容要寫在同一句話裡——不做「等一下再告訴我要發什麼」那種兩段式，
+    免得半個指令留在那裡不知道什麼時候會送出去。
+    """
+    import re
+    m = re.match(r"^(?:發送|發)香草通知\s*[:：]?\s*(.+)$", text.strip(), re.S)
+    if not m:
+        if text.strip() in ("香草通知人數", "香草通知名單", "通知人數"):
+            send_reply(event.reply_token,
+                       f"香草遊戲的通知名單目前 {herb_notify.count()} 人。\n"
+                       f"要發通知：傳「發送香草通知：內容」。")
+            return True
+        return False
+    body = m.group(1).strip()
+    ids = herb_notify.recipients()
+    if not ids:
+        send_reply(event.reply_token, "名單上還沒有人，先不發。")
+        return True
+    sent = multicast(ids, body)
+    send_reply(event.reply_token, f"已發給 {sent} / {len(ids)} 人。")
+    return True
+
+
 def nudge_pending_group(event: MessageEvent, group_id: str):
     """還沒核准的群組裡有人叫小凡：說明原因＋提醒老闆。同一個群組一天一次。"""
     today = _dt.date.today().isoformat()
@@ -568,6 +631,20 @@ def handle_message(event: MessageEvent):
     user_id   = event.source.user_id
     ctx_key   = source_key(event)
     role      = access.role_of(event.source, get_boss_id())
+
+    # 老闆的指令要排在通知名單前面：「發送香草通知：…」裡面也有「香草通知」四個字，
+    # 順序反過來的話，他一下指令就會先被當成訂閱。
+    if role == access.BOSS and handle_herb_broadcast(event, strip_keywords(user_text) or user_text):
+        return
+
+    # ── 香草遊戲的通知名單 ──
+    # 在身分判斷之前：玩家是陌生人，本來就會被白名單擋掉，但這一句要收。
+    # 只在私訊處理，群組裡不接——群組的通知名單沒有意義，也容易誤觸。
+    if not getattr(event.source, "group_id", None):
+        want = herb_notify.wants(user_text)
+        if want:
+            handle_herb_notify(event, user_id, want)
+            return
 
     # ── 身分先擋在最前面（見 access.py）──
     # 陌生人：只回一則固定說明，不進 AI、不查資料、不寫任何東西。

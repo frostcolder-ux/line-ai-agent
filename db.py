@@ -118,6 +118,12 @@ def init_db():
             decided_at TEXT NOT NULL DEFAULT ''
         );
 
+        -- 香草遊戲的通知名單（見 herb_notify.py）。只存代碼與時間，取消就刪掉。
+        CREATE TABLE IF NOT EXISTS herb_notify (
+            user_id    TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL DEFAULT ''
+        );
+
         CREATE TABLE IF NOT EXISTS farm_tasks (
             id          SERIAL       PRIMARY KEY,
             description TEXT         NOT NULL,
