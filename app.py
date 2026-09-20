@@ -46,7 +46,7 @@ from linebot.v3.messaging import (
     PushMessageRequest,
     TextMessage,
 )
-from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent, JoinEvent
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent, JoinEvent, FollowEvent
 
 import access  # 誰可以使喚小凡：老闆、已核准的群組、其他人
 import herb_notify  # 香草遊戲的通知名單
@@ -167,6 +167,16 @@ GROUP_WELCOME = """大家好！我是小凡 🌿
 • 「小凡 開投票 開會時間 10點/14點/16點」→ 發起投票
 
 有任何農業問題歡迎隨時問我！🌱"""
+# 有人加好友時回的第一句。用 reply token，不計入訊息則數。
+#
+# 電腦上玩遊戲的人只能掃 QR 加好友，沒辦法像手機那樣「開聊天室並把話打好」，
+# 所以加完好友要馬上告訴他要傳哪一句，否則他就停在這裡了。
+FOLLOW_REPLY = """謝謝你加我好友，我是小凡，思凡自然農園的小幫手。
+
+如果你是從香草遊戲「一個產季」來的：傳一句「香草通知」給我，新的一季開放時我通知你一次。不想收再傳「取消香草通知」就好。
+
+想認識思凡的香草和社會農場：https://www.selvansimpact.com"""
+
 # 同一個人一天只回一次，免得被當成聊天機器人一直丟訊息。
 # 記在記憶體就好：Render 重啟後最多多回一次，不值得為它寫一張表。
 _outside_replied: dict[str, str] = {}
@@ -826,6 +836,18 @@ def handle_join(event: JoinEvent):
         f"回「核准 {row['code']}」開始服務，回「拒絕 {row['code']}」我就退出。\n"
         f"在核准之前，我不會回話、不會推播，也不會看那個群組的訊息。"
     )
+
+
+# ── 加好友事件 ────────────────────────────────────────────────────────────────
+
+@handler.add(FollowEvent)
+def handle_follow(event: FollowEvent):
+    """有人加小凡好友（多半是從香草遊戲來的）：回一句說明，告訴他要傳哪一句才會收到通知。"""
+    try:
+        send_reply(event.reply_token, FOLLOW_REPLY)
+        log(f"followed by {getattr(event.source, 'user_id', '?')[:10]}...")
+    except Exception as e:
+        log(f"follow reply error: {type(e).__name__}: {e}")
 
 
 # ── 圖片訊息處理 ──────────────────────────────────────────────────────────────
