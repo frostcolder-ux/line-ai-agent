@@ -169,6 +169,8 @@ GROUP_WELCOME = """大家好！我是小凡 🌿
 # 同一個人一天只回一次，免得被當成聊天機器人一直丟訊息。
 # 記在記憶體就好：Render 重啟後最多多回一次，不值得為它寫一張表。
 _outside_replied: dict[str, str] = {}
+# 還沒核准的群組，一天也只提醒一次
+_pending_nudged: dict[str, str] = {}
 
 
 def group_display_name(group_id: str) -> str:
@@ -488,6 +490,25 @@ def start_serving(group_id: str, name: str):
         log(f"approve schedule error: {type(e).__name__}: {e}")
 
 
+def nudge_pending_group(event: MessageEvent, group_id: str):
+    """還沒核准的群組裡有人叫小凡：說明原因＋提醒老闆。同一個群組一天一次。"""
+    today = _dt.date.today().isoformat()
+    if _pending_nudged.get(group_id) == today:
+        return
+    _pending_nudged[group_id] = today
+    name = group_display_name(group_id)
+    row = access.remember_pending(group_id, name)
+    try:
+        send_reply(event.reply_token, "這個群組還沒開通，我先不插話。請思凡在這裡說一句「小凡 核准」，我就開始幫忙。")
+    except Exception as e:
+        log(f"pending nudge reply error: {type(e).__name__}: {e}")
+    notify_boss(
+        f"「{name}」裡有人叫我，但這個群組還沒核准。\n"
+        f"代號 {row['code']}\n\n"
+        f"回「核准 {row['code']}」開通，或直接在那個群組說「小凡 核准」。"
+    )
+
+
 def handle_boss_command(event: MessageEvent, action: str, code: str) -> bool:
     """老闆在私訊裡的群組管理指令（核准 A7K2／拒絕 A7K2／群組清單）。有處理就回 True。"""
     if action == "list":
@@ -560,8 +581,16 @@ def handle_message(event: MessageEvent):
             if decision:
                 decide_group(event, group_id, decision)
                 return
-        # 私訊來的陌生人回一則說明（不管他有沒有叫「小凡」，他是特地來傳訊息的）；
-        # 還沒核准的群組其他人說什麼都不回，那裡本來就不該有小凡的聲音。
+        # 還沒核准的群組裡有人叫小凡：講一句為什麼不回答，並通知老闆。
+        #
+        # ★ 為什麼不能默默不理
+        #   config.json 只留得住一個群組（其他群組是小凡自己加的，而 Render 重啟
+        #   就把那些紀錄洗掉）。所以白名單上線時，有些還在用的工作群組不會被自動核准。
+        #   如果那裡的小凡只是安靜，沒有人知道發生什麼事，也沒人知道怎麼救。
+        if group_id and is_triggered(user_text):
+            nudge_pending_group(event, group_id)
+            return
+        # 私訊來的陌生人回一則說明（不管他有沒有叫「小凡」，他是特地來傳訊息的）
         if not group_id:
             reply_to_outsider(event, user_id)
         return
