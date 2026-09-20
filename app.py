@@ -173,7 +173,7 @@ GROUP_WELCOME = """大家好！我是小凡 🌿
 # 所以加完好友要馬上告訴他要傳哪一句，否則他就停在這裡了。
 FOLLOW_REPLY = """謝謝你加我好友，我是小凡，思凡自然農園的小幫手。
 
-如果你是從香草遊戲「一個產季」來的：傳一句「香草通知」給我，新的一季開放時我通知你一次。不想收再傳「取消香草通知」就好。
+如果你是從香草遊戲「一個產季」來的：點下面的「開啟新內容通知」，新的一季開放時我通知你一次。（也可以直接傳「香草通知」給我。）不想收再傳「取消香草通知」就好。
 
 想認識思凡的香草和社會農場：https://www.selvansimpact.com"""
 
@@ -367,11 +367,31 @@ def analyze_image(user_id: str, image_bytes: bytes, media_type: str, query: str)
     return reply_text
 
 
-def send_reply(reply_token: str, text: str):
+def send_reply(reply_token: str, text: str, quick_reply=None):
+    """回覆訊息。quick_reply 會在輸入框上方長出可以點的按鈕（點了等於替他把那句話傳出去）。"""
     with ApiClient(configuration) as api_client:
         MessagingApi(api_client).reply_message_with_http_info(
-            ReplyMessageRequest(reply_token=reply_token, messages=[TextMessage(text=text)])
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=[TextMessage(text=text, quick_reply=quick_reply)],
+            )
         )
+
+
+def herb_quick_reply():
+    """
+    香草遊戲的兩顆快捷按鈕。
+
+    ★ 為什麼要有這個
+      原本要玩家自己打「香草通知」四個字才進得了名單。少數人會照做，多數人不會——
+      而且手機打字打錯就失敗。快捷按鈕點一下就等於他傳出那句話，同意一樣明確
+      （訊息確實是從他的帳號送出的），但不用打字。
+    """
+    from linebot.v3.messaging import QuickReply, QuickReplyItem, MessageAction, URIAction
+    return QuickReply(items=[
+        QuickReplyItem(action=MessageAction(label="開啟新內容通知", text="香草通知")),
+        QuickReplyItem(action=URIAction(label="去玩一局", uri="https://www.selvansimpact.com/herb-season")),
+    ])
 
 
 # ── 後台管理 Blueprint ────────────────────────────────────────────────────────
@@ -486,7 +506,7 @@ def reply_to_outsider(event: MessageEvent, user_id: str):
     _outside_replied[user_id] = today
     try:
         # 用回覆不用推播：回覆不計入官方帳號的訊息則數
-        send_reply(event.reply_token, OUTSIDE_REPLY)
+        send_reply(event.reply_token, OUTSIDE_REPLY, herb_quick_reply())
         log(f"outsider replied: {user_id[:10]}...")
     except Exception as e:
         log(f"outsider reply error: {type(e).__name__}: {e}")
@@ -849,7 +869,7 @@ def handle_join(event: JoinEvent):
 def handle_follow(event: FollowEvent):
     """有人加小凡好友（多半是從香草遊戲來的）：回一句說明，告訴他要傳哪一句才會收到通知。"""
     try:
-        send_reply(event.reply_token, FOLLOW_REPLY)
+        send_reply(event.reply_token, FOLLOW_REPLY, herb_quick_reply())
         log(f"followed by {getattr(event.source, 'user_id', '?')[:10]}...")
     except Exception as e:
         log(f"follow reply error: {type(e).__name__}: {e}")
