@@ -980,6 +980,8 @@ def test_radar():
     try:
         if which == "morning":
             radar.daily_morning_report(notify_boss, _list_tasks)
+        elif which == "review":
+            radar.weekly_review_digest(notify_boss)
         elif which == "friday":
             import scheduler_tasks
             gid = scheduler_tasks._primary_group_id(lambda: APP_CONFIG)
@@ -1011,6 +1013,7 @@ def radar_preview():
         "status_raw": status,
         "boss_digest": farm_bridge.format_status_digest(status, for_boss=True),
         "group_reminder": farm_bridge.format_reminder(status),
+        "review_digest": farm_bridge.format_review_digest(farm_bridge.get_review_digest(days=7)),
         "pending_tasks": _list_tasks(status="pending"),
     })
 

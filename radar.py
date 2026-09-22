@@ -78,6 +78,13 @@ def daily_morning_report(notify_boss_fn, list_tasks_fn):
     else:
         parts.append("\n📋 週報進度：暫時取不到（農場系統連線中）")
 
+    # 1b. 等人工審核的週報（自動審查擋下的）
+    rv = farm_bridge.get_review_digest(days=14)
+    if rv.get("ok") and rv.get("waiting"):
+        w = rv["waiting"]
+        parts.append(f"👀 待你審核 {len(w)} 份：" + "、".join(h["farm"] for h in w[:5])
+                     + ("…" if len(w) > 5 else ""))
+
     # 2. 待辦事項
     try:
         tasks = list_tasks_fn(status="pending")
@@ -96,6 +103,19 @@ def daily_morning_report(notify_boss_fn, list_tasks_fn):
         log("daily_morning_report 已推播")
     except Exception as e:
         log(f"daily_morning_report 失敗：{e}")
+
+
+# ── 週一：週報自動審查回報（私訊老闆）────────────────────────────────────────
+
+def weekly_review_digest(notify_boss_fn):
+    """週一早上私訊老闆：上週自動通過幾份、哪些轉人工與原因、關懷提醒。"""
+    data = farm_bridge.get_review_digest(days=7)
+    text = f"📋 小凡週報審查回報　{_today_str()}\n\n" + farm_bridge.format_review_digest(data)
+    try:
+        notify_boss_fn(text)
+        log("weekly_review_digest 已推播")
+    except Exception as e:
+        log(f"weekly_review_digest 失敗：{e}")
 
 
 # ── 週五：ESG 文件提醒（私訊老闆）─────────────────────────────────────────────

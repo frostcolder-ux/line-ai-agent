@@ -21,7 +21,9 @@ DEFAULT_FARM_API_URL = "https://data.selvansimpact.com"
 FARM_API_URL = (os.environ.get("FARM_API_URL", "").strip()
                 or DEFAULT_FARM_API_URL).rstrip("/")
 FARM_API_TOKEN = os.environ.get("FARM_API_TOKEN", "").strip()
-TIMEOUT = 12
+# ★ 至少 30 秒：farm-reports 在 Render 免費方案，醒著時單次回應也要 12.5 秒，
+#   設 12 秒會讓資料「靜靜地」抓不到（見 farm_reports 的冷啟動紀錄）。
+TIMEOUT = 30
 
 
 def log(msg: str):
@@ -202,6 +204,53 @@ def record_minutes(meeting_id: int, minutes: str, actions: list | None = None) -
 def complete_action(action_id: int) -> dict:
     """把某項會議決議待辦標記為完成。"""
     return _post(f"/internal/meeting-actions/{action_id}/done", {})
+
+
+def get_review_digest(days: int = 7) -> dict:
+    """週報自動審查摘要：自動通過、轉人工與原因、關懷提醒、常見建議。"""
+    return _get("/internal/review-digest", {"days": days})
+
+
+def format_review_digest(data: dict) -> str:
+    """老闆看的週報審查週報。關懷提醒只有農場與人數，不含姓名。"""
+    if not data.get("ok"):
+        return f"⚠️ 無法取得週報審查摘要：{data.get('error', '未知錯誤')}"
+    days = data.get("days", 7)
+    passed, held, waiting = data.get("passed", []), data.get("held", []), data.get("waiting", [])
+    lines = [f"🤖 週報自動審查（近 {days} 天）"]
+    if not data.get("enabled", True):
+        lines.append("（自動審查目前關閉，全部為人工審核）")
+    lines.append(f"✅ 自動通過 {len(passed)} 份　👀 轉人工 {len(held)} 份")
+    if waiting:
+        lines.append(f"\n⏳ 還在等你審核（{len(waiting)} 份）：")
+        for h in waiting[:8]:
+            reasons = "；".join(h.get("reasons", []))
+            lines.append(f"・{h['farm']} {h['week'][5:]} 週：{reasons[:80]}")
+        if len(waiting) > 8:
+            lines.append(f"　…還有 {len(waiting) - 8} 份")
+    elif held:
+        lines.append("轉人工的都已處理完 👍")
+    warn = [(p["farm"], w) for p in passed for w in p.get("warnings", [])]
+    if warn:
+        lines.append("\n📝 通過但有提醒：")
+        for farm, w in warn[:5]:
+            lines.append(f"・{farm}：{w[:60]}")
+    care = data.get("care_alerts", [])
+    if care:
+        by_farm = {}
+        for c in care:
+            by_farm[c["farm"]] = by_farm.get(c["farm"], 0) + c.get("n", 1)
+        lines.append("\n💛 關懷提醒（心情很低或壓力很高）：")
+        lines.append("　" + "、".join(f"{f} {n} 位" for f, n in by_farm.items()) + "，細節請到後台週報查看")
+    tops = data.get("top_suggestions", [])
+    if tops:
+        lines.append("\n💡 最常給農場的建議：")
+        for text, n in tops[:3]:
+            lines.append(f"・{text}…（{n} 份）")
+    total = data.get("pending_total")
+    if total:
+        lines.append(f"\n目前全部待審：{total} 份 → 後台「週報審核管理」")
+    return "\n".join(lines)
 
 
 # ── 排版 ──────────────────────────────────────────────────────────────────────

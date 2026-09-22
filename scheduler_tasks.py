@@ -168,6 +168,14 @@ def setup_radar(notify_boss_fn, push_fn, list_tasks_fn, get_config):
         name="週五合規文件提醒",
     )
 
+    # 週一週報自動審查回報（08:15，接在週報進度之後）
+    _scheduler.add_job(
+        lambda: radar.weekly_review_digest(notify_boss_fn),
+        CronTrigger(day_of_week="mon", hour=8, minute=15, timezone="Asia/Taipei"),
+        id="radar_weekly_review", replace_existing=True,
+        name="週一週報自動審查回報",
+    )
+
     # 週一會議與決議追蹤（08:30，接在週報進度之後）
     _scheduler.add_job(
         lambda: radar.weekly_meeting_digest(notify_boss_fn),
@@ -176,7 +184,7 @@ def setup_radar(notify_boss_fn, push_fn, list_tasks_fn, get_config):
         name="週一會議與決議追蹤",
     )
 
-    log("Radar jobs registered ✓ (週一08:00+08:30 / 每日07:30 / 週五09:00+15:00)")
+    log("Radar jobs registered ✓ (週一08:00+08:15+08:30 / 每日07:30 / 週五09:00+15:00)")
     return _scheduler
 
 
