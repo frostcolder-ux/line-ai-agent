@@ -131,6 +131,13 @@ def init_db():
             status      TEXT         NOT NULL DEFAULT 'pending',
             created_at  TEXT         NOT NULL
         );
+
+        -- 老闆在私訊回分身的核准（「同意 #12」），分身來拉（見 agent_bridge.py）
+        CREATE TABLE IF NOT EXISTS agent_replies (
+            id          SERIAL       PRIMARY KEY,
+            text        TEXT         NOT NULL,
+            created_at  TEXT         NOT NULL
+        );
     """
     try:
         conn = get_conn()

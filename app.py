@@ -707,6 +707,20 @@ def handle_message(event: MessageEvent):
             reply_to_outsider(event, user_id)
         return
 
+    # 老闆回分身的核准（「同意 #12」「不要 #12」「改：… #12」）。
+    # 一定要排在群組指令前面：parse_boss_command 看到「同意」加數字會當成打錯代號、回群組清單，
+    # 把這則核准吃掉。分身的編號一定帶 #，群組代號不會，所以用 # 分流。
+    if role == access.BOSS and not getattr(event.source, "group_id", None):
+        import agent_bridge
+        if agent_bridge.looks_like_reply(user_text):
+            try:
+                agent_bridge.save_reply(user_text)
+                send_reply(event.reply_token, "收到，已轉給總管。")
+            except Exception as e:
+                log(f"agent reply save error: {type(e).__name__}: {e}")
+                send_reply(event.reply_token, "記不下來，請到控制台按核准，或稍後再回一次。")
+            return
+
     # 老闆的管理指令：核准／拒絕群組、看清單。要先於觸發詞判斷，
     # 這樣他直接回「核准 A7K2」就好，不必每次都寫「小凡」。
     if role == access.BOSS:
@@ -1040,6 +1054,28 @@ def internal_agent_result():
         return {"error": "BOSS_LINE_USER_ID not configured"}, 503
     notify_boss("【總管回報】\n" + text[:4500])
     return {"ok": True}
+
+
+@app.route("/internal/boss-replies", methods=["GET"])
+def internal_boss_replies():
+    """老闆在私訊回分身的核准，給分身來拉（見 agent_bridge.py）。
+
+    整個時間窗都吐出去：分身那邊用核准編號判斷是否處理過，重拉不會重複生效。
+    需帶 X-Internal-Token 標頭（或 ?token=）等於 FARM_API_TOKEN。
+    """
+    import os as _os
+    required = _os.environ.get("FARM_API_TOKEN", "").strip()
+    if not required:
+        return {"error": "FARM_API_TOKEN not configured"}, 503
+    supplied = request.headers.get("X-Internal-Token", "") or request.args.get("token", "")
+    if supplied != required:
+        return {"error": "unauthorized"}, 401
+    import agent_bridge
+    try:
+        days = max(1, min(int(request.args.get("days", 7)), 60))
+    except ValueError:
+        days = 7
+    return {"replies": agent_bridge.list_replies(days)}
 
 
 @app.route("/internal/work-requests", methods=["GET"])
