@@ -1,7 +1,8 @@
 """分身（老闆本機的代理人）與小凡之間的核准往返。
 
 分身需要老闆同意時，透過 /internal/agent-result 私訊老闆：
-    「#12 要寄出基隆市政府的報價單嗎？… 回「同意 #12」「不要 #12」或「改：… #12」」
+    「#12 要寄出基隆市政府的報價單嗎？… 回「同意 #12」「不要 #12」「改：… #12」或「先放 #12」」
+「先放」是他還沒想好：分身把那件擱著、不再提醒，其他事照做。
 老闆在 LINE 私訊回覆 → 這裡存起來 → 分身巡檢時打 /internal/boss-replies 拉回去。
 
 為什麼一定要帶「#數字」才算：老闆原本就會打「同意 A7K2」核准群組（access.parse_boss_command），
@@ -21,7 +22,7 @@ from datetime import datetime, timedelta
 BASE_DIR = os.path.dirname(__file__)
 JSON_PATH = os.path.join(BASE_DIR, "agent_replies.json")
 
-REPLY_RE = re.compile(r"(同意|可以|好|ok|OK|不要|不行|取消|改)[^#\n]{0,300}#\s*\d+")
+REPLY_RE = re.compile(r"(先放|等等|再想|想一下|同意|可以|好|ok|OK|不要|不行|取消|改)[^#\n]{0,300}#\s*\d+")
 
 
 def log(msg: str):
