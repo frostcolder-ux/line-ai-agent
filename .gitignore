@@ -33,3 +33,5 @@ Thumbs.db
 # 本機 JSON 模式抓到的群組交辦：含夥伴姓名與原話，不進版控
 captured_requests.json
 pending_messages.json
+agent_snapshot.json
+agent_sent.json

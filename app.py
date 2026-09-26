@@ -712,6 +712,14 @@ def handle_message(event: MessageEvent):
     # 把這則核准吃掉。分身的編號一定帶 #，群組代號不會，所以用 # 分流。
     if role == access.BOSS and not getattr(event.source, "group_id", None):
         import agent_bridge
+        if agent_bridge.is_status_query(user_text):
+            # 老闆私訊「總管狀態」：電腦關著也回得出來（用總管最近送上來的摘要）
+            try:
+                send_reply(event.reply_token, agent_bridge.status_text(agent_bridge.load_snapshot())[:4800])
+            except Exception as e:
+                log(f"agent status error: {type(e).__name__}: {e}")
+                send_reply(event.reply_token, "總管狀態讀不到，稍後再試。")
+            return
         if agent_bridge.looks_like_reply(user_text):
             try:
                 agent_bridge.save_reply(user_text)
@@ -1056,6 +1064,29 @@ def internal_agent_result():
     return {"ok": True}
 
 
+@app.route("/internal/agent-snapshot", methods=["POST", "GET"])
+def internal_agent_snapshot():
+    """總管（本機）每 10 分鐘送一份任務摘要上來；電腦關著時，早晚報與「總管狀態」都用這份。
+
+    POST 存最新一份；GET 回目前存的（給總管自己檢查）。需帶 X-Internal-Token＝FARM_API_TOKEN。
+    """
+    import os as _os
+    required = _os.environ.get("FARM_API_TOKEN", "").strip()
+    if not required:
+        return {"error": "FARM_API_TOKEN not configured"}, 503
+    supplied = request.headers.get("X-Internal-Token", "") or request.args.get("token", "")
+    if supplied != required:
+        return {"error": "unauthorized"}, 401
+    import agent_bridge
+    if request.method == "GET":
+        return agent_bridge.load_snapshot() or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or "generated_at" not in data:
+        return {"error": "snapshot required"}, 400
+    agent_bridge.save_snapshot(data)
+    return {"ok": True}
+
+
 @app.route("/internal/boss-replies", methods=["GET"])
 def internal_boss_replies():
     """老闆在私訊回分身的核准，給分身來拉（見 agent_bridge.py）。
@@ -1192,6 +1223,13 @@ def _start_background_services():
         push_fn=push_message,
         get_config=lambda: APP_CONFIG,
     )
+
+    # 2b. 總管早晚報（07:45／21:15，用總管送上來的摘要；電腦關著也會發）
+    try:
+        import agent_bridge
+        agent_bridge.setup_agent_jobs(scheduler_tasks._scheduler, notify_boss)
+    except Exception as e:
+        log(f"agent jobs error: {type(e).__name__}: {e}")
 
     # 3. 營運雷達（讀農場回報系統真實資料 → 主動推播）
     from data_store import list_tasks as _list_tasks

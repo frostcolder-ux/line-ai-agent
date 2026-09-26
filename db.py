@@ -138,6 +138,19 @@ def init_db():
             text        TEXT         NOT NULL,
             created_at  TEXT         NOT NULL
         );
+
+        -- 總管（本機）送上來的任務摘要，只存最新一份；電腦關著時早晚報用它（見 agent_bridge.py）
+        CREATE TABLE IF NOT EXISTS agent_snapshot (
+            id          INTEGER      PRIMARY KEY,
+            data        TEXT         NOT NULL,
+            updated_at  TEXT         NOT NULL
+        );
+
+        -- 早晚報發過了沒（多個 worker 只讓一個發）
+        CREATE TABLE IF NOT EXISTS agent_sent (
+            key         TEXT         PRIMARY KEY,
+            at          TEXT         NOT NULL
+        );
     """
     try:
         conn = get_conn()
